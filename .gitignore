@@ -1,0 +1,31 @@
+# Build products (regenerable: mingw32-make -C engine all)
+build/
+
+# Python caches and test artifacts (all .pyc live in __pycache__)
+__pycache__/
+.pytest_cache/
+
+# Virtual environments (guard; none used by the documented setup)
+.venv/
+venv/
+
+# Secrets guard (none exist today; Streamlit would look in ui/.streamlit/)
+.env
+.env.*
+!.env.example
+**/.streamlit/secrets.toml
+
+# Private-key / credential files (guard; no legitimate project file matches)
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Windows noise
+Thumbs.db
+Desktop.ini
+
+# Generated experiment reports (curated evidence is docs/demo-record.json)
+reports/
