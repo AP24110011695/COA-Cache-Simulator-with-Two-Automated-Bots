@@ -319,6 +319,22 @@ class TestManualImport:
         })
         assert len(response["error"]["details"]) == 2
 
+    def test_problem_lines_truncated_like_the_engine(self):
+        # Regression (2026-10-27 audit): a pathological all-bad paste must
+        # not build an unbounded issue list — details cap at 10 lines plus
+        # one truncation summary; the message keeps the true total.
+        response = run({
+            "pattern": "manual",
+            "config": ts.CONFIG_SET_ASSOCIATIVE,
+            "params": {"text": "\n".join(["zzz"] * 15)},
+        })
+        assert response["ok"] is False
+        assert response["error"]["code"] == "E_TRACE_INVALID"
+        assert "15 problem line(s)" in response["error"]["message"]
+        assert len(response["error"]["details"]) == 11
+        assert response["error"]["details"][-1]["problem"] == \
+            "further problem lines truncated (5 more)"
+
     def test_line_over_max_rejected(self):
         response = run({
             "pattern": "manual",

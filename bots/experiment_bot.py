@@ -99,11 +99,14 @@ def _run_experiment(request, simulate_fn):
                         config.get("organization"))])
         random_seed = _validated_random_seed(request)
         run_specs = _policy_run_specs(config, random_seed)
+        # associativity exists only for set_associative (architecture.md 6.1);
+        # fully_associative configs carry no such field.
         fixed = {"capacity_bytes": config["capacity_bytes"],
                  "block_size_bytes": config["block_size_bytes"],
                  "organization": config["organization"],
-                 "associativity": config["associativity"],
                  "address_width_bits": config["address_width_bits"]}
+        if config["organization"] == "set_associative":
+            fixed["associativity"] = config["associativity"]
     else:
         if "random_seed" in request:
             raise ExperimentBotError(
@@ -225,6 +228,13 @@ def _validate_config_shape(config):
     if not isinstance(organization, str):
         issues.append(_issue("config.organization", "must be a string",
                              organization))
+    if organization == "set_associative":
+        associativity = config.get("associativity")
+        if isinstance(associativity, bool) or \
+                not isinstance(associativity, int):
+            issues.append(_issue(
+                "config.associativity",
+                "must be an integer for set_associative", associativity))
     if issues:
         raise ExperimentBotError(
             "E_JOB_INVALID",

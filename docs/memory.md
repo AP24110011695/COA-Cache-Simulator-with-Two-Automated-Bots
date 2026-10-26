@@ -3,7 +3,8 @@
 > The verified, current state of the project. Updated after every meaningful
 > change. Facts below marked **verified** were actually executed/inspected on
 > the stated date; anything else is an assumption or limitation and is labeled.
-> Last updated: 2026-10-25 (**DELIVERED** — all ten phases complete).
+> Last updated: 2026-10-27 (**DELIVERED**; post-delivery: 3D view V1, dark
+> mode, reliability audit with four fixes — D-28).
 
 ---
 
@@ -329,6 +330,43 @@
   st.dataframe event-log canvas keeps Streamlit's light rendering (its
   container is themed; a full-dark grid would need theme.base runtime
   switching, which Streamlit 1.66 does not support).
+- **D-28 Reliability-audit fixes (2026-10-27):** full application audit
+  (config/geometry/policy matrix, trace sources, engine invariants, Bot 2,
+  workflow, experiments, 3D view, themes) found four verified defects, all
+  fixed with regression tests:
+  1. `bots/experiment_bot.py` — policy_comparison built the record's
+     `fixed` metadata with `config["associativity"]` unconditionally, so a
+     fully_associative config (which must NOT carry that field, per
+     `architecture.md` §6.1) crashed Bot 2 with a raw `KeyError`
+     (production incident: fully associative 16 B / 16 B / 13-bit FIFO,
+     conflict 8×11, seed 5457). Fix: `associativity` is included in
+     `fixed` only for set_associative, and `_validate_config_shape` now
+     requires an integer `associativity` for set_associative bases so an
+     incomplete config is a structured `E_JOB_INVALID`, never a KeyError.
+     Verified end-to-end in the running app: the incident workflow now
+     completes all four steps (88 accesses, 0 hits, 87 evictions per
+     policy, RANDOM seed 5457 with 87 rng draws — hand-calculated values).
+  2. `bots/trace_bot.py` — the manual parser collected every problem line
+     with no cap (the engine truncates at 10), so a pathological all-bad
+     paste built an unbounded error card. Fix: first 10 issues plus one
+     "further problem lines truncated (N more)" summary; the message
+     keeps the true total.
+  3. `ui/app.py` — "Load sample" crashed the run on a malformed or
+     hand-edited sample file (raw `JSONDecodeError`/`KeyError`, or a
+     non-list `addresses` crashing the preview render). Fix: samples are
+     shape-checked at load; an invalid file renders an `E_TRACE_INVALID`
+     error card and keeps the currently loaded trace and results
+     (browser-verified with a bad file, then removed).
+  4. `ui/app.py` — workflow step 4 called `save_report` unguarded; an
+     `OSError` unwound before `state.workflow = workflow`, wiping the
+     successful steps 1–3 results from session state. Fix: a save failure
+     marks step 4 failed (`E_INTERNAL` error card, FAILED pill) with
+     steps 1–3 kept; "Retry failed step" re-runs step 4 only.
+  Audit harnesses (scratch, not committed): 12,573 engine checks (543
+  simulate runs across 5 geometries × 9 organization/policy combos × 10
+  boundary traces, plus ~60 validation cases) and 111 bot/scene checks —
+  no engine or bot defects beyond the four above. pytest 167 → 172 (5
+  regression tests). No commit/push performed.
 - **D-24 Phase-9 decisions (2026-10-25):**
   (a) Launch convention: the app is started from the `ui/` directory
   (`cd ui && python -m streamlit run app.py`) so `ui/.streamlit/config.toml`
@@ -953,6 +991,25 @@
     light restoration confirmed; oversize/empty-trace captions intact.
     Engine untouched this round (D-26 fix was Phase-10-audit). See
     `docs/screenshots/theme-*.png`.
+
+  - 2026-10-27 (reliability audit — four defects fixed, D-28): baseline
+    re-verified first (**167 passed**; engine **729 checks, 0 failures**),
+    then the scripted audit matrix and the incident reproduction. Post-fix
+    regression: `python -m pytest tests -q` — **172 passed, 4 warnings**
+    (5 new tests: 3 Bot 2 `fixed`/incomplete-associativity regressions
+    including the incident end-to-end, plus the manual-issue truncation
+    and the sample/error-path additions); `mingw32-make -C engine test` —
+    **729
+    checks, 0 failures**; `mingw32-make -C engine all` — up to date (no
+    C++ changes; zero-warning state unchanged). Browser verification in
+    the running app: the incident workflow (fully associative 16/16,
+    width 13, FIFO, blocks 8 × passes 11, seed 5457) completes all four
+    steps DONE with the report saved; Simulator trace-generate/simulate
+    (8 accesses, 7 evictions, FIFO explanation); 3D view stepped to 2/8
+    with counters/scrubber/log consistent; Light→Dark→Light with results
+    unchanged; malformed sample file → `E_TRACE_INVALID` card with prior
+    results preserved; Experiments policy comparison + Save report.
+    Engine C++ untouched this round.
 
 No test result may be claimed without being recorded in this section.
 

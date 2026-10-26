@@ -227,12 +227,38 @@ with tab_simulator:
             sample = st.selectbox("Sample trace", samples)
             st.caption(f"Sample file: traces/{sample}")
             if st.button("Load sample"):
-                data = json.loads(
-                    (_TRACES_DIR / sample).read_text(encoding="utf-8"))
-                invalidate_stale_results()
-                state.trace = {"name": data["name"], "pattern": "sample",
-                               "params": {}, "addresses": data["addresses"]}
-                state.trace_origin = "Sample file"
+                # A malformed or hand-edited sample file must surface as an
+                # error card (design.md 7), never a traceback — and it must
+                # not discard the currently loaded trace.
+                try:
+                    data = json.loads(
+                        (_TRACES_DIR / sample).read_text(encoding="utf-8"))
+                    name = data["name"]
+                    addresses = data["addresses"]
+                    shape_ok = (isinstance(name, str) and bool(name)
+                                and isinstance(addresses, list)
+                                and all(isinstance(address, int)
+                                        and not isinstance(address, bool)
+                                        for address in addresses))
+                except (json.JSONDecodeError, KeyError, TypeError,
+                        OSError, UnicodeDecodeError) as err:
+                    shape_ok = False
+                    problem = f"{type(err).__name__}: {err}"
+                else:
+                    problem = ("name must be a non-empty string and "
+                               "addresses a list of integers")
+                if shape_ok:
+                    invalidate_stale_results()
+                    state.trace = {"name": name, "pattern": "sample",
+                                   "params": {}, "addresses": addresses}
+                    state.trace_origin = "Sample file"
+                else:
+                    state.sim_error = {
+                        "code": "E_TRACE_INVALID",
+                        "message": f"sample file traces/{sample} is not a "
+                                   "valid trace file",
+                        "details": [{"field": f"traces/{sample}",
+                                     "problem": problem, "received": None}]}
 
     if state.trace is not None:
         components.render_trace_preview(state.trace, state.trace_origin)
@@ -474,9 +500,17 @@ with tab_workflow:
 
         # Step 4: report.
         if workflow["failed_step"] is None and workflow.get("record"):
-            report_dir = _REPORTS_DIR
-            workflow["report_path"] = str(save_report(
-                workflow["record"], report_dir))
+            # A report-save failure must fail the step like any other —
+            # losing steps 1-3 results here would wipe successful output.
+            try:
+                workflow["report_path"] = str(save_report(
+                    workflow["record"], _REPORTS_DIR))
+            except OSError as err:
+                workflow["failed_step"] = 4
+                workflow["error"] = {
+                    "code": "E_INTERNAL",
+                    "message": f"the report could not be saved: {err}",
+                    "details": []}
         state.workflow = workflow
 
     # Persisted step statuses (IDLE/RUNNING/DONE/FAILED pills; design.md 6.5).
@@ -495,7 +529,8 @@ with tab_workflow:
         3: ("Policy comparison", "done" if workflow.get("record")
             else "failed" if workflow.get("failed_step") == 3 else "idle",
             "experiment complete" if workflow.get("record") else ""),
-        4: ("Report", "done" if workflow.get("report_path") else "idle",
+        4: ("Report", "done" if workflow.get("report_path")
+            else "failed" if workflow.get("failed_step") == 4 else "idle",
             (workflow.get("report_path") or "")),
     }
     for _, (name, step_state, message) in step_states.items():

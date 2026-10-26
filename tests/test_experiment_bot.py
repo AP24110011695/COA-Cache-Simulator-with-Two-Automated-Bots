@@ -14,6 +14,7 @@ import pytest
 import test_smoke as ts
 from bots import engine_client
 from bots.experiment_bot import run_experiment, save_report
+from bots.trace_bot import generate as trace_generate
 
 ENGINE = ts.ROOT / "build" / "cache_sim.exe"
 ENGINE_SKIP = ts.ENGINE_SKIP
@@ -123,6 +124,45 @@ class TestPolicyComparisonUnit:
         assert response["ok"] is False
         assert response["error"]["code"] == "E_CONFIG_INVALID"
         assert "direct-mapped" in response["error"]["message"]
+
+    def test_fully_associative_has_no_associativity_in_fixed(self):
+        # Regression (2026-10-27 incident): a fully_associative config
+        # carries no associativity field; policy_comparison must build its
+        # `fixed` metadata without crashing (KeyError: 'associativity').
+        config = {"capacity_bytes": 16, "block_size_bytes": 16,
+                  "organization": "fully_associative",
+                  "address_width_bits": 13, "policy": "FIFO"}
+        response = run_experiment(
+            policy_request(config=config),
+            canned_policy_simulate({"LRU": 1, "FIFO": 1, "RANDOM": 1}))
+        assert response["ok"] is True, response
+        assert response["record"]["fixed"] == {
+            "capacity_bytes": 16, "block_size_bytes": 16,
+            "organization": "fully_associative",
+            "address_width_bits": 13}
+
+    def test_set_associative_fixed_keeps_associativity(self):
+        response = run_experiment(
+            policy_request(), canned_policy_simulate({"LRU": 1, "FIFO": 1,
+                                                      "RANDOM": 1}))
+        assert response["record"]["fixed"] == {
+            "capacity_bytes": 8, "block_size_bytes": 2,
+            "organization": "set_associative", "associativity": 2,
+            "address_width_bits": 8}
+
+    def test_set_associative_without_associativity_is_structured_error(self):
+        # Regression: an incomplete set_associative base config must fail
+        # with E_JOB_INVALID, never a raw KeyError from `fixed`.
+        config = {"capacity_bytes": 16, "block_size_bytes": 4,
+                  "organization": "set_associative",
+                  "address_width_bits": 13, "policy": "LRU"}
+        response = run_experiment(
+            policy_request(config=config),
+            canned_policy_simulate({"LRU": 1, "FIFO": 1, "RANDOM": 1}))
+        assert response["ok"] is False
+        assert response["error"]["code"] == "E_JOB_INVALID"
+        fields = [d["field"] for d in response["error"]["details"]]
+        assert "config.associativity" in fields
 
     def test_random_seed_required(self):
         request = policy_request()
@@ -439,6 +479,41 @@ class TestRealEngineIntegration:
         assert record["summary_text"].endswith(
             "Caveat: direct-mapped has no selectable replacement policy; "
             "the set-associative and fully-associative runs use LRU.")
+
+    def test_fully_associative_incident_end_to_end(self):
+        # Regression for the 2026-10-27 production incident: Bot 1 conflict
+        # trace (8 blocks x 11 passes) on a fully_associative 16 B / 16 B /
+        # 13-bit FIFO config, Bot 2 policy comparison with RANDOM seed 5457.
+        # One line total, so every policy evicts the single way on every
+        # miss after the first fill: 88 accesses, 0 hits, 88 misses,
+        # 87 evictions — identical across policies.
+        config = {"capacity_bytes": 16, "block_size_bytes": 16,
+                  "organization": "fully_associative",
+                  "address_width_bits": 13, "policy": "FIFO"}
+        trace_response = trace_generate(
+            {"pattern": "conflict", "config": config,
+             "params": {"distinct_blocks": 8, "passes": 11,
+                        "target_set": 0, "start_block": 0}},
+            engine_client.fetch_geometry)
+        assert trace_response["ok"] is True, trace_response
+        trace = trace_response["trace"]
+        assert len(trace["addresses"]) == 88
+        response = self._run_with_engine(
+            {"mode": "policy_comparison", "config": config,
+             "trace": trace, "random_seed": 5457})
+        assert response["ok"] is True, response
+        record = response["record"]
+        assert "associativity" not in record["fixed"]
+        assert record["fixed"]["organization"] == "fully_associative"
+        assert len(record["runs"]) == 3
+        for run in record["runs"]:
+            summary = run["summary"]
+            assert (summary["accesses"], summary["hits"],
+                    summary["misses"], summary["evictions"]) == (88, 0, 88, 87)
+        random_run = record["runs"][2]
+        assert random_run["policy"] == "RANDOM"
+        assert random_run["seed"] == 5457
+        assert random_run["summary"]["replacement_meta"]["rng_draws"] == 87
 
     def test_save_report_round_trip(self, tmp_path):
         response = self._run_with_engine(policy_request())

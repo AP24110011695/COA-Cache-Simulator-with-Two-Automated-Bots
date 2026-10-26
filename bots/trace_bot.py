@@ -15,6 +15,7 @@ dict out. Responsibilities and limits:
 from bots.engine_client import EngineError
 
 _MAX_TRACE_ADDRESSES = 100000  # architecture.md 12
+_MAX_COLLECTED_MANUAL_ISSUES = 10  # mirrors the engine's trace-issue cap
 _KNOWN_PATTERNS = ("sequential", "repeated", "conflict", "manual")
 
 # Per-pattern parameter keys (architecture.md 6.8). All are required;
@@ -200,6 +201,7 @@ def _manual(params, geometry):
     max_address = geometry["max_address"]
     issues = []
     addresses = []
+    bad_total = 0
     for line_no, raw in enumerate(params["text"].splitlines(), start=1):
         content = raw.split("#", 1)[0].strip()
         if not content:
@@ -210,20 +212,23 @@ def _manual(params, geometry):
             else:
                 value = int(content, 10)
         except ValueError:
-            issues.append(_issue(f"line {line_no}",
-                                 "not a valid address (decimal or 0x hex)",
-                                 content))
-            continue
-        if value < 0 or value > max_address:
-            issues.append(_issue(f"line {line_no}",
-                                 f"must be between 0 and {max_address}",
-                                 content))
-            continue
-        addresses.append(value)
+            problem = "not a valid address (decimal or 0x hex)"
+        else:
+            if 0 <= value <= max_address:
+                addresses.append(value)
+                continue
+            problem = f"must be between 0 and {max_address}"
+        bad_total += 1
+        if len(issues) < _MAX_COLLECTED_MANUAL_ISSUES:
+            issues.append(_issue(f"line {line_no}", problem, content))
+    if bad_total > len(issues):
+        issues.append(_issue("params.text",
+                             f"further problem lines truncated "
+                             f"({bad_total - len(issues)} more)", bad_total))
     if issues:
         raise TraceBotError(
             "E_TRACE_INVALID",
-            f"manual trace text has {len(issues)} problem line(s)", issues)
+            f"manual trace text has {bad_total} problem line(s)", issues)
     if len(addresses) > _MAX_TRACE_ADDRESSES:
         raise TraceBotError(
             "E_LIMIT",
