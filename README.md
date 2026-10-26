@@ -80,6 +80,20 @@ Error envelopes use the closed code set `E_USAGE` / `E_JOB_INVALID` /
 exit codes 0 / 2 / 3 / 4 (contracts in `docs/architecture.md` §5–§6,
 canonical schemas in `schemas/`).
 
+### The 3D Cache Machine
+
+After running a simulation in the Simulator tab, the section **"The Cache
+Machine — 3D view"** renders the run as a three-lane 3D diorama: Main
+Memory (left), the Address Bus with the decoded address (middle), and the
+CPU Cache (right). It replays the engine's own events and per-access
+snapshots — hits, misses, line fills, and evictions animate step by step
+with Play/Pause/Next/Previous/Replay/Reset, a speed control, and a
+scrubber. The view uses the vendored three.js r128 (MIT, `ui/static/`),
+works offline, and is available for traces up to 2,000 accesses within
+the snapshot budget; larger runs keep the 2D views with an explanatory
+caption. The scene displays engine output only — it never computes cache
+behavior.
+
 ## The controlled demonstration (two-minute walkthrough)
 
 1. Launch the UI and, in the sidebar, choose: organization

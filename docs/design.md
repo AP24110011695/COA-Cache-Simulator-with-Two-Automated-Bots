@@ -172,6 +172,23 @@ configuration it was validated against. Full trace available via the event
 table and downloads. A horizontal "address strip" is explicitly avoided —
 it adds noise, not information.
 
+### 6.9 The Cache Machine — 3D view (post-delivery enhancement)
+A three-lane 3D diorama under the cache state in the Simulator tab:
+**Main Memory** (a wall of block slabs — the persistent source of data),
+**Address Bus** (the decoding stage: each access appears as an address chip
+that splits into tag | index | offset), and **CPU Cache** (shelves = sets,
+slots = ways; filled slots show `tag X · blk Y`). The scene replays the
+engine's own events and per-access snapshots — hits pulse green with a
+response packet returning to the CPU, misses copy a block from memory into
+a slot, evictions flash the discarded cached copy red with the policy
+reason labeled. Playback controls (Play/Pause/Next/Previous/Replay/Reset,
+speed, scrubber) and a compact info/counters/mini-log panel live inside the
+embedded component; the panel state is self-contained. Outcomes are always
+text-labeled, never color-only. Palette and tokens come from §4. Limits
+and fallbacks: traces ≤ 2,000 accesses, snapshot budget, stage caps (512
+lines / 128 sets / 64 ways) — beyond them the section explains why and the
+2D views remain. Implemented with vendored three.js r128 (MIT).
+
 ## 7. State design
 
 | State | Presentation |

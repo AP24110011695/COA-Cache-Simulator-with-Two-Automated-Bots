@@ -221,11 +221,12 @@ bool simulate(const Config& config, const Geometry& geometry,
     if (include_state_after_each) {
       json snap;
       snap["n"] = e.n;
-      snap["sets"] = state_to_json(st, json::array(), policy)["sets"];
+      snap["sets"] = state_to_json(st, json::array(), policy, false)["sets"];
       out->snapshots.push_back(snap);
     }
   }
   out->rng_draws = rng.draws_used();
+  out->snapshots_requested = include_state_after_each;
   return verify_invariants(st, out->counts);
 }
 
@@ -269,7 +270,7 @@ json event_to_json(const SimulateEvent& e, const Config& config) {
 }
 
 json state_to_json(const CacheState& state, const json& snapshots,
-                   Policy policy) {
+                   Policy policy, bool snapshots_requested) {
   json sets = json::array();
   for (const auto& lines : state.sets) {
     // Ranks among the valid lines of this set (architecture.md 6.7):
@@ -315,7 +316,10 @@ json state_to_json(const CacheState& state, const json& snapshots,
   }
   json s;
   s["sets"] = sets;
-  s["snapshots"] = snapshots.empty() ? json(nullptr) : snapshots;
+  // snapshots semantics (architecture.md 6.7): an empty array means the
+  // option was requested and zero snapshots were captured (empty trace);
+  // null would wrongly tell consumers that snapshots were not requested.
+  s["snapshots"] = snapshots_requested ? snapshots : json(nullptr);
   return s;
 }
 

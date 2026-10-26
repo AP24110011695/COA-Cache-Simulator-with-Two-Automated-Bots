@@ -384,6 +384,42 @@ only, keeping the earlier results.
 
 ---
 
+## Part 2b — The Cache Machine (3D view)
+
+After you run a simulation, a section called **"The Cache Machine — 3D
+view"** appears under the Cache state. It shows the same simulation as a
+small 3D world:
+
+- **Left — Main Memory:** a wall of blocks. The blocks your trace uses
+  are labeled (for example `blk 0`, `blk 2`). They never disappear —
+  memory always keeps the original data.
+- **Middle — Address Bus:** every access appears here as a chip that
+  splits into `tag | index | offset`. This shows how the simulator
+  decodes an address.
+- **Right — CPU Cache:** shelves (sets) with slots (ways). Blue slots
+  hold a cached copy (`tag X · blk Y`).
+
+**Controls (top of the 3D view):** ▶ Play, ⏸ Pause, ◀ Previous,
+▶| Next, ↺ Replay, ⏮ Reset, a speed dropdown (0.5×–4×), and a scrubber.
+Drag the scene to orbit; scroll to zoom. Below the scene: counters and
+the current access explanation.
+
+**What you will see during playback:**
+
+- **Hit** — the cache slot pulses green and a green packet travels back
+  to the CPU. Main memory stays untouched.
+- **Miss (empty line)** — the empty slot pulses blue and an amber copy of
+  the block flies from Main Memory into the slot.
+- **Miss with eviction** — the old cached copy turns red and fades away
+  (it is discarded, not written back), then the new copy flies in.
+
+**Tip:** drag the 3D view so it is fully visible while playing — if the
+view is scrolled off screen, the browser slows the animation down. If a
+settings change resets the view, just press Play again; the numbers stay
+the same.
+
+---
+
 ## Part 3 — Step-by-Step Project Demonstration for My Sir
 
 This uses the project's own worked example **E3** — a trace where LRU and

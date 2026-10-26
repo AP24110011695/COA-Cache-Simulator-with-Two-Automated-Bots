@@ -58,6 +58,7 @@ struct SimulateResult {
   std::vector<SimulateEvent> events;
   SimulateCounts counts;
   std::uint64_t rng_draws = 0;  // consumed only by RANDOM valid-line evictions
+  bool snapshots_requested = false;  // mirrors options.include_state_after_each
   CacheState final_state;
   nlohmann::json snapshots = nlohmann::json::array();  // empty unless requested
 };
@@ -71,6 +72,7 @@ bool simulate(const Config& config, const Geometry& geometry,
 
 nlohmann::json event_to_json(const SimulateEvent& event, const Config& config);
 nlohmann::json state_to_json(const CacheState& state,
-                             const nlohmann::json& snapshots, Policy policy);
+                             const nlohmann::json& snapshots, Policy policy,
+                             bool snapshots_requested);
 
 }  // namespace engine

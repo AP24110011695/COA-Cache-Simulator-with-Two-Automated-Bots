@@ -275,6 +275,41 @@
   loading, `*.txt` in the manual-import format); the integration suite
   proves both versions of each pair produce identical addresses through
   Bot 1.
+- **D-25 The Cache Machine — 3D view V1 (post-delivery enhancement,
+  2026-10-25):** implements the animation deferred in §10. Three-lane 3D
+  diorama (Main Memory wall → Address Bus → CPU Cache shelves) embedded in
+  the Simulator tab via `streamlit.components.v1.html`; driven strictly by
+  engine output — events (block/set/way/tag/offset/result/loaded/evicted/
+  policy_meta/explanation) plus per-access snapshots requested through the
+  existing `options.include_state_after_each` (the UI now sends this option
+  when the run qualifies: trace ≤ 2,000, snapshots × lines ≤ 2,000,000,
+  and the stage caps — 512 lines, 128 sets, 64 ways; otherwise the 3D view
+  is disabled with a caption and the run behaves exactly as before).
+  Playback (Play/Pause/Next/Previous/Replay/Reset/speed/scrubber) is owned
+  by the iframe's JavaScript; the payload is deterministic per envelope so
+  identical results produce identical HTML. Copy semantics enforced: loads
+  are copies (memory persists), evictions discard the cached copy only,
+  hits highlight the cached copy with no memory traffic. New files:
+  `ui/cache_scene.py` (payload builder + availability rules + HTML
+  assembly), `ui/scene_app.js` (scene + playback, no cache logic),
+  `ui/scene.css`, `ui/static/three.min.js` (three.js r128, MIT, vendored —
+  dependency recorded per rules.md §9), `tests/test_cache_scene.py` (17
+  tests). **Verified limitation:** the iframe does not survive page
+  refresh (session reset, existing behavior); a Streamlit rerun with an
+  unchanged payload was tested in the browser and playback position
+  survived (4/5 preserved across a forced rerun). Scene evidence:
+  `docs/screenshots/v1-3d-final.png` (canvas extraction after playback),
+  `v1-3d-midplay.png` (mid-play page capture).
+- **D-26 Empty-trace snapshot semantics fix (2026-10-25):** with
+  `include_state_after_each` requested and an empty trace, the envelope
+  reported `state.snapshots: null` (`state_to_json` collapsed the empty
+  array), contradicting `architecture.md` §6.7 ("snapshots is a list …
+  when the option is true") and breaking the UI's captured/not-captured
+  distinction. Fixed: `SimulateResult` records `snapshots_requested`,
+  `state_to_json` emits `[]` for requested-but-empty and `null` only when
+  the option was absent; `ui/cache_scene.py` treats `[]` as a valid empty
+  animation. Verified: empty trace + option → `[]` (3D shows "Empty
+  trace"); no option → `null` ("not captured"). Cache algorithm untouched.
 - **D-24 Phase-9 decisions (2026-10-25):**
   (a) Launch convention: the app is started from the `ui/` directory
   (`cd ui && python -m streamlit run app.py`) so `ui/.streamlit/config.toml`
@@ -920,9 +955,10 @@ No test result may be claimed without being recorded in this section.
   requires a one-variable-at-a-time justification like the other modes.
 - Config file save/load in the UI — not required by `prd.md`; do not add
   without a stated requirement.
-- Per-access cache-state animation — the contract supports snapshots
-  (`include_state_after_each`, ≤ 2,000 accesses); whether the UI animates them
-  is a Phase 9 judgment call.
+- Per-access cache-state animation — **V1 implemented post-delivery**
+  (the "Cache Machine" 3D view; see D-25). Still deferred: the V2/V3
+  refinements (tag/index/offset inspector panels, camera presets per
+  organization, running hit-rate overlay, report export).
 
 ## 11. Latest verified working commands
 

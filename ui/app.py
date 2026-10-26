@@ -14,11 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import json  # noqa: E402
 
 import streamlit as st  # noqa: E402
+import streamlit.components.v1 as components_v1  # noqa: E402
 
 from bots import engine_client  # noqa: E402
 from bots.experiment_bot import run_experiment, save_report  # noqa: E402
 from bots.trace_bot import generate  # noqa: E402
-from ui import components, tokens  # noqa: E402
+from ui import cache_scene, components, tokens  # noqa: E402
 
 st.set_page_config(page_title="COA Cache Simulator",
                    page_icon="▦", layout="wide",
@@ -37,6 +38,7 @@ state.setdefault("experiment_record", None)
 state.setdefault("experiment_error", None)
 state.setdefault("report_path", None)
 state.setdefault("workflow", None)         # per-step results of the workflow
+state.setdefault("scene_reasons", [])      # why the 3D view is unavailable
 
 
 # --- Sidebar: cache configuration (design.md 6.3) -------------------------------
@@ -236,12 +238,21 @@ with tab_simulator:
     if st.button("Run simulation", type="primary",
                  disabled=(state.trace is None or not config_valid)):
         with st.spinner("Running the engine…"):
+            # The 3D view needs per-access snapshots; request them whenever
+            # the run qualifies (trace ≤ 2,000 and within the serialization
+            # budget — cache_scene.scene_unavailable_reasons mirrors the
+            # engine's rules). Runs that do not qualify behave exactly as
+            # before, without the option.
+            trace_length = len(state.trace["addresses"])
+            state.scene_reasons = cache_scene.scene_unavailable_reasons(
+                config, trace_length)
+            job = {"config": config,
+                   "trace": {"name": state.trace["name"],
+                             "addresses": state.trace["addresses"]}}
+            if not state.scene_reasons:
+                job["options"] = {"include_state_after_each": True}
             try:
-                state.sim_envelope = engine_client.run_simulate({
-                    "config": config,
-                    "trace": {"name": state.trace["name"],
-                              "addresses": state.trace["addresses"]},
-                })
+                state.sim_envelope = engine_client.run_simulate(job)
                 state.sim_error = None
             except engine_client.EngineError as err:
                 state.sim_error = err.as_error_dict()
@@ -266,6 +277,26 @@ with tab_simulator:
             st.markdown("**Cache state**")
             components.render_state_grid(envelope["state"],
                                          envelope["events"])
+
+        # The Cache Machine — 3D view (post-delivery enhancement, V1)
+        st.subheader("The Cache Machine — 3D view")
+        if state.scene_reasons:
+            components.render_empty_card(
+                "3D view unavailable for this run: " +
+                "; ".join(state.scene_reasons) +
+                ". All results above remain fully available.")
+        else:
+            built = cache_scene.build_html(envelope)
+            if built.get("ok"):
+                st.caption(
+                    "The Cache Machine replays the engine's own events and "
+                    "per-access snapshots. Drag to orbit, scroll to zoom. "
+                    "If the view resets after a settings change, press Play "
+                    "or use the scrubber to resume.")
+                components_v1.html(built["html"], height=680)
+            else:
+                components.render_empty_card(
+                    "3D view unavailable: " + built.get("reason", ""))
 
 # --- Experiments tab -----------------------------------------------------------------
 

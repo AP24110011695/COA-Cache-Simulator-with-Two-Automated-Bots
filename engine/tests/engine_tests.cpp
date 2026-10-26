@@ -135,8 +135,11 @@ engine::SimulateResult run_sim(const json& config_json,
 }
 
 json state_json(const engine::Config& cfg, const engine::SimulateResult& r) {
+  // serialize with whatever the run actually requested, so snapshot
+  // assertions see the captured array and non-snapshot runs see null
   return engine::state_to_json(r.final_state, r.snapshots,
-                               engine::policy_from_config(cfg));
+                               engine::policy_from_config(cfg),
+                               r.snapshots_requested);
 }
 
 json state_json(const json& config_json, const engine::SimulateResult& r) {

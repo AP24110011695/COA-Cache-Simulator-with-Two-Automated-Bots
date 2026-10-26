@@ -360,7 +360,8 @@ int run_simulate(const Options& opts) {
                                               tv.trace.addresses);
   envelope["state"] = engine::state_to_json(result.final_state,
                                             result.snapshots,
-                                            engine::policy_from_config(config));
+                                            engine::policy_from_config(config),
+                                            result.snapshots_requested);
   emit(envelope, opts.out_path);
   return kExitOk;
 }

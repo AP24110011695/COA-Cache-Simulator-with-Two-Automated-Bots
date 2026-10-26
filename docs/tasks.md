@@ -439,6 +439,28 @@ passed / 4 warnings, zero-warning rebuild. Evidence: `docs/memory.md`
 
 ---
 
+## Post-delivery enhancement — E-3D "The Cache Machine" (V1)
+
+**Status:** `DONE` (2026-10-25 — implemented and verified after delivery,
+per the professor's 3D-visualization request and the reviewed v2 proposal;
+not a numbered phase, all ten phases remain `DONE`.)
+
+**Delivered:** three-lane 3D diorama (Main Memory / Address Bus / CPU
+Cache) embedded in the Simulator tab via three.js r128 (MIT, vendored);
+driven strictly by engine events + per-access snapshots (the UI now
+requests `options.include_state_after_each` when the run qualifies);
+correct copy semantics (loads copy, evictions discard the cached copy,
+hits highlight with no memory traffic); playback controls with in-iframe
+synchronized info/counters/mini-log; availability rules mirroring the
+engine limits (trace ≤ 2,000, snapshot budget, stage caps 512 lines /
+128 sets / 64 ways) with graceful captions. Tests: `tests/test_cache_scene.py`
+(17 tests — payload fidelity, determinism, limits, org layouts, option
+regression). Engine fix required and made: empty trace + snapshots
+requested now returns `[]` instead of `null` (D-26). Evidence:
+`docs/memory.md` §8 (D-25/D-26), `docs/screenshots/v1-3d-*.png`.
+
+---
+
 ## Execution rules
 
 - One phase per `Execute Phase N` command; stop after the phase report.
