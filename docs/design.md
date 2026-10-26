@@ -189,6 +189,30 @@ and fallbacks: traces ≤ 2,000 accesses, snapshot budget, stage caps (512
 lines / 128 sets / 64 ways) — beyond them the section explains why and the
 2D views remain. Implemented with vendored three.js r128 (MIT).
 
+### 6.10 Theme selection — Light/Dark (post-delivery enhancement)
+A Light/Dark selector at the top of the sidebar (above cache
+configuration), implemented in `app.py` as a session-state selectbox:
+**Light is the default** and reproduces the delivered appearance exactly
+(light tokens in §4 are asserted verbatim by tests). Dark mode applies the
+dark counterparts of every §4 token (defined alongside them in
+`ui/tokens.py` `THEMES` — charcoal/navy surfaces `#16181D`/`#1F232B`, no
+pure black, soft accents; text ≥ 4.5:1 and borders ≥ 3:1 WCAG-verified and
+test-asserted). Presentation only: no simulation data, controls, or
+behavior change — events, snapshots, summaries, CSV downloads, and
+experiment results are byte-identical across themes (test-asserted).
+Mechanics: `components.inject_styles(theme)` appends `ui/styles_dark.css`
+(project components consume the same CSS variables; Streamlit chrome
+overrides are scoped to verified testids/classes); matplotlib charts take
+the active palette with transparent figure backgrounds; the 3D view
+receives `theme` as presentation-only payload metadata and selects a scene
+palette plus `ui/scene_dark.css` (`body.cm-dark`). Persistence: session
+state survives reruns and tab navigation; browser refresh resets to Light
+in V1 (accepted). Accepted fallback: switching theme rebuilds the 3D
+iframe, resetting playback to access 1 paused. Known V1 limitation: the
+`st.dataframe` event-log/state-grid canvases keep Streamlit's light
+rendering inside themed containers (full-dark grids would need
+`theme.base` runtime switching, unsupported on Streamlit 1.66).
+
 ## 7. State design
 
 | State | Presentation |

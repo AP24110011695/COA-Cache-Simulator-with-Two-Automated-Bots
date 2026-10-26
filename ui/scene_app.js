@@ -1,9 +1,13 @@
-/* The Cache Machine — 3D scene and playback (V1).
+/* The Cache Machine — 3D scene and playback (V1 + dark theme).
  *
  * Consumes window.CACHE_PAYLOAD (built by ui/cache_scene.py from engine
  * output) and animates it. This script contains NO cache logic: hits,
  * misses, victims, tags, indices, and state come verbatim from the
  * engine's events and per-access snapshots.
+ *
+ * The payload's `theme` field ("light"/"dark") is presentation-only
+ * metadata: it selects this scene's palette and overlay styling. It never
+ * affects events, snapshots, or any simulation outcome.
  */
 (function () {
   'use strict';
@@ -15,16 +19,33 @@
     return;
   }
 
+  // presentation palette (theme-aware; no simulation meaning)
+  var DARK = P.theme === "dark";
+  document.body.classList.add(DARK ? "cm-dark" : "cm-light");
+  var T = DARK ? {
+    bg: 0x16181D, text: "#E8EAED", text2: "#A8B0BD",
+    accent: 0x4F8DE8, accentSlot: 0x2E5F9E, accentSoft: 0x22304A,
+    empty: 0x2A303B, hit: 0x66BB6A, miss: 0xEF5350, copy: 0xFFB74D,
+    slab: 0x9DB8D4, plate: 0x2A303B, bus: 0x667080, cpu: 0x4F8DE8,
+    hemiGround: 0x101216
+  } : {
+    bg: 0xf5f7fa, text: "#1F2933", text2: "#52606D",
+    accent: 0x1F5FA8, accentSlot: 0x1F5FA8, accentSoft: 0xe8f0f8,
+    empty: 0xdfe6ee, hit: 0x2E7D32, miss: 0xC62828, copy: 0xB26A00,
+    slab: 0x9db8d4, plate: 0xdfe6ee, bus: 0xd9dee4, cpu: 0x1F5FA8,
+    hemiGround: 0xd8e0ea
+  };
+
   // ---------------------------------------------------------------- scene
   var scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xf5f7fa);
+  scene.background = new THREE.Color(T.bg);
 
   var camera = new THREE.PerspectiveCamera(42, 1, 0.1, 800);
   var renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   stage.appendChild(renderer.domElement);
 
-  scene.add(new THREE.HemisphereLight(0xffffff, 0xd8e0ea, 0.95));
+  scene.add(new THREE.HemisphereLight(0xffffff, T.hemiGround, 0.95));
   var sun = new THREE.DirectionalLight(0xffffff, 0.7);
   sun.position.set(6, 18, 10);
   scene.add(sun);
@@ -132,19 +153,19 @@
   [['Main Memory', MEM_X - 1, 11.5, 0],
    ['Address Bus', 0, 6.4, 0],
    ['CPU Cache', CACHE_X - 1, 11.5, 0]].forEach(function (t) {
-    var s = textSprite([t[0]], { size: 44, color: '#1F2933', scale: 0.017 });
+    var s = textSprite([t[0]], { size: 44, color: T.text, scale: 0.017 });
     s.position.set(t[1], t[2], t[3]);
     scene.add(s);
   });
 
-  var cpu = box(1.6, 1.0, 1.0, 0x1F5FA8);
+  var cpu = box(1.6, 1.0, 1.0, T.cpu);
   cpu.position.set(-10.5, BUS_Y, 0);
   scene.add(cpu);
   var cpuLabel = textSprite(['CPU'], { size: 34, color: '#FFFFFF', scale: 0.017 });
   cpuLabel.position.copy(cpu.position);
   scene.add(cpuLabel);
 
-  var bus = box(17, 0.1, 0.6, 0xD9DEE4);
+  var bus = box(17, 0.1, 0.6, T.bus);
   bus.position.set(0, BUS_Y, 0);
   scene.add(bus);
 
@@ -156,7 +177,7 @@
   var wallBlocks = P.memory.blocks.slice(0, WALL_MAX);
   var memoryTruncated = P.memory.truncated || (P.memory.blocks.length > WALL_MAX);
   var slabGeometry = new THREE.BoxGeometry(1.3, 0.8, 0.5);
-  var slabMaterial = new THREE.MeshLambertMaterial({ color: 0x9db8d4 });
+  var slabMaterial = new THREE.MeshLambertMaterial({ color: T.slab });
   var wallPositions = {};
   wallBlocks.forEach(function (block, i) {
     var col = i % WALL_COLS, row = Math.floor(i / WALL_COLS);
@@ -164,7 +185,7 @@
     mesh.position.set(MEM_X, 8.2 - row * 1.15, (col - (WALL_COLS - 1) / 2) * 1.7);
     scene.add(mesh);
     wallPositions[block] = mesh.position.clone();
-    var label = textSprite(['blk ' + block], { size: 26, color: '#52606D', scale: 0.013 });
+    var label = textSprite(['blk ' + block], { size: 26, color: T.text2, scale: 0.013 });
     label.position.set(mesh.position.x, mesh.position.y + 0.75, mesh.position.z);
     scene.add(label);
   });
@@ -172,7 +193,7 @@
   if (memoryTruncated) {
     var wallNote = textSprite(
       ['memory wall shows the first ' + WALL_MAX + ' referenced blocks'],
-      { size: 24, color: '#52606D', scale: 0.014 });
+      { size: 24, color: T.text2, scale: 0.014 });
     wallNote.position.set(MEM_X, 8.2 - wallRows * 1.15 - 0.9, 0);
     scene.add(wallNote);
   }
@@ -191,20 +212,20 @@
       var cx = CACHE_X + row * 2.6;
       var cz = (col - (CACHE_COLS - 1) / 2) * 2.9;
       var cy = 7.0 - row * 2.1;
-      var plate = box(WAYS * 1.7 + 0.4, 0.12, 1.8, 0xdfe6ee);
+      var plate = box(WAYS * 1.7 + 0.4, 0.12, 1.8, T.plate);
       plate.position.set(cx, cy - 0.55, cz);
       scene.add(plate);
       var shelfLabel = textSprite(['Set ' + s],
-        { size: 28, color: '#52606D', scale: 0.014 });
+        { size: 28, color: T.text2, scale: 0.014 });
       shelfLabel.position.set(cx - (WAYS * 1.7) / 2 - 0.9, cy, cz);
       scene.add(shelfLabel);
       slots[s] = [];
       for (var w = 0; w < WAYS; w++) {
-        var mesh = box(1.35, 0.85, 1.2, 0xdfe6ee, 0.3);
+        var mesh = box(1.35, 0.85, 1.2, T.empty, 0.3);
         var wz = cz + (w - (WAYS - 1) / 2) * 1.7;
         mesh.position.set(cx, cy, wz);
         scene.add(mesh);
-        var label = textSprite(['—'], { size: 26, color: '#52606D', scale: 0.014 });
+        var label = textSprite(['—'], { size: 26, color: T.text2, scale: 0.014 });
         label.position.set(cx, cy + 0.85, wz);
         scene.add(label);
         slots[s][w] = { mesh: mesh, label: label };
@@ -213,25 +234,26 @@
   })();
 
   // ------------------------------------------------------------- movers
-  var copyMesh = box(1.35, 0.85, 1.2, 0xB26A00);
+  var copyMesh = box(1.35, 0.85, 1.2, T.copy);
   copyMesh.visible = false;
   var copyLabel = textSprite([''], { size: 28, color: '#FFFFFF', scale: 0.016 });
   copyLabel.visible = false;
   scene.add(copyMesh); scene.add(copyLabel);
 
-  var ghostMesh = box(1.35, 0.85, 1.2, 0xC62828, 0.85);
+  var ghostMesh = box(1.35, 0.85, 1.2, T.miss, 0.85);
   ghostMesh.visible = false;
   var ghostLabel = textSprite([''], { size: 28, color: '#FFFFFF', scale: 0.016 });
   ghostLabel.visible = false;
   scene.add(ghostMesh); scene.add(ghostLabel);
 
   var hitPacket = new THREE.Mesh(new THREE.SphereGeometry(0.26, 16, 12),
-    new THREE.MeshLambertMaterial({ color: 0x2E7D32 }));
+    new THREE.MeshLambertMaterial({ color: T.hit }));
   hitPacket.visible = false;
   scene.add(hitPacket);
 
   var addrSprite = textSprite([''], {
-    size: 32, color: '#1F2933', background: 'rgba(255,255,255,0.95)', scale: 0.017
+    size: 32, color: T.text, background: DARK ? 'rgba(31,35,43,0.95)' :
+      'rgba(255,255,255,0.95)', scale: 0.017
   });
   addrSprite.visible = false;
   scene.add(addrSprite);
@@ -251,13 +273,13 @@
     if (!slot) return;
     slot.mesh.scale.set(1, 1, 1);
     if (line && line.valid) {
-      slot.mesh.material = new THREE.MeshLambertMaterial({ color: 0x1F5FA8 });
+      slot.mesh.material = new THREE.MeshLambertMaterial({ color: T.accentSlot });
       swapSprite(slot.label, ['tag ' + line.tag, 'blk ' + line.block],
         { size: 26, color: '#FFFFFF' });
     } else {
       slot.mesh.material = new THREE.MeshLambertMaterial({
-        color: 0xdfe6ee, transparent: true, opacity: 0.3 });
-      swapSprite(slot.label, ['—'], { size: 26, color: '#52606D' });
+        color: T.empty, transparent: true, opacity: 0.3 });
+      swapSprite(slot.label, ['—'], { size: 26, color: T.text2 });
     }
   }
 
@@ -388,13 +410,15 @@
           : ['addr ' + ev.address + ' → tag ' + ev.tag + ' | index — | offset ' +
              ev.offset];
         swapSprite(addrSprite, text, {
-          size: 32, color: '#1F2933', background: 'rgba(255,255,255,0.95)' });
+          size: 32, color: T.text,
+          background: DARK ? 'rgba(31,35,43,0.95)' : 'rgba(255,255,255,0.95)'
+        });
         addrSprite.scale.set(420 * 0.017, 60 * 0.017, 1);
         addrSprite.position.set(0, 5.4, 0);
         addrSprite.visible = true;
         if (ev.hasIndex && slot) {
           slot.mesh.material = new THREE.MeshLambertMaterial({
-            color: 0x1F5FA8, transparent: true, opacity: 0.45 });
+            color: T.accent, transparent: true, opacity: 0.45 });
         }
       },
       update: function (t) { addrSprite.position.y = 5.4 + 0.25 * Math.sin(t * Math.PI); }
@@ -406,7 +430,7 @@
       phases.push({
         dur: 850,
         start: function () {
-          slot.mesh.material = new THREE.MeshLambertMaterial({ color: 0x2E7D32 });
+          slot.mesh.material = new THREE.MeshLambertMaterial({ color: T.hit });
           hitPacket.visible = true;
           hitPacket.position.copy(slotPos);
         },
@@ -427,37 +451,37 @@
           dur: 700,
           start: function () {
             slot.mesh.material = new THREE.MeshLambertMaterial({
-              color: 0xC62828, transparent: true, opacity: 0.95 });
+              color: T.miss, transparent: true, opacity: 0.95 });
             ghostMesh.visible = true;
             ghostMesh.position.copy(slotPos);
             ghostLabel.visible = true;
             ghostLabel.position.copy(slotPos).add(new THREE.Vector3(0, 0.95, 0));
             swapSprite(ghostLabel, ['blk ' + ev.evicted.block + ' discarded'],
               { size: 28, color: '#FFFFFF',
-                background: 'rgba(198,40,40,0.95)' });
+                background: DARK ? 'rgba(198,40,40,0.9)' : 'rgba(198,40,40,0.95)' });
             ghostLabel.scale.set(320 * 0.016, 64 * 0.016, 1);
           },
           update: function (t) {
             ghostMesh.position.y = victimSrc.y + t * 1.6;
-            ghostMesh.material.opacity = 0.95 * (1 - t);
+            ghostMesh.material.opacity = 0.85 * (1 - t);
             ghostLabel.position.y = victimSrc.y + 0.95 + t * 1.6;
             ghostLabel.material.opacity = 1 - t;
           }
         });
       } else {
-        // empty line — gentle blue pulse on the slot
+        // empty line — gentle accent pulse on the slot
         phases.push({
           dur: 550,
           start: function () {
             slot.mesh.material = new THREE.MeshLambertMaterial({
-              color: 0x1F5FA8, transparent: true, opacity: 0.35 });
+              color: T.accent, transparent: true, opacity: 0.35 });
           },
           update: function (t) {
             slot.mesh.material.opacity = 0.35 + 0.2 * Math.sin(t * Math.PI);
           }
         });
       }
-      // a copy travels from main memory into the slot (via the bus)
+      // phase 3 — a copy travels from main memory into the slot (via the bus)
       phases.push({
         dur: 950,
         start: function () {
@@ -465,7 +489,8 @@
           copyMesh.position.copy(src);
           copyLabel.position.copy(src).add(new THREE.Vector3(0, 0.95, 0));
           swapSprite(copyLabel, ['blk ' + ev.block + ' (copy)'],
-            { size: 28, color: '#FFFFFF', background: 'rgba(178,106,0,0.95)' });
+            { size: 28, color: DARK ? '#16181D' : '#FFFFFF',
+              background: DARK ? 'rgba(255,183,77,0.95)' : 'rgba(178,106,0,0.95)' });
           copyLabel.scale.set(280 * 0.016, 64 * 0.016, 1);
         },
         update: function (t) {

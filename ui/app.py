@@ -24,7 +24,6 @@ from ui import cache_scene, components, tokens  # noqa: E402
 st.set_page_config(page_title="COA Cache Simulator",
                    page_icon="▦", layout="wide",
                    initial_sidebar_state="expanded")
-components.inject_styles()
 
 _REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports"
 _TRACES_DIR = Path(__file__).resolve().parents[1] / "traces"
@@ -41,9 +40,14 @@ state.setdefault("workflow", None)         # per-step results of the workflow
 state.setdefault("scene_reasons", [])      # why the 3D view is unavailable
 
 
-# --- Sidebar: cache configuration (design.md 6.3) -------------------------------
+# --- Sidebar: theme, then cache configuration (design.md 6.3) --------------------
 
 with st.sidebar:
+    theme = st.selectbox("Theme", ["Light", "Dark"], index=0,
+                         key="cm_theme_select")
+    components.inject_styles(theme.lower())
+    colors = components.theme_colors(theme.lower())
+
     st.header("Cache configuration")
     organization = st.selectbox(
         "Organization",
@@ -264,19 +268,19 @@ with tab_simulator:
     if envelope is None:
         components.render_empty_card(
             "No simulation yet. Configure the cache, choose a trace, and "
-            "run.")
+            "run.", colors)
     else:
         summary = envelope["summary"]
-        components.render_confirmation_line(summary)
+        components.render_confirmation_line(summary, colors)
         components.render_metric_cards(summary)
-        components.render_hit_rate_chart(envelope["events"])
+        components.render_hit_rate_chart(envelope["events"], colors)
         with st.container(border=True):
             st.markdown("**Event log**")
             components.render_event_table(envelope["events"])
         with st.container(border=True):
             st.markdown("**Cache state**")
             components.render_state_grid(envelope["state"],
-                                         envelope["events"])
+                                         envelope["events"], colors)
 
         # The Cache Machine — 3D view (post-delivery enhancement, V1)
         st.subheader("The Cache Machine — 3D view")
@@ -284,9 +288,9 @@ with tab_simulator:
             components.render_empty_card(
                 "3D view unavailable for this run: " +
                 "; ".join(state.scene_reasons) +
-                ". All results above remain fully available.")
+                ". All results above remain fully available.", colors)
         else:
-            built = cache_scene.build_html(envelope)
+            built = cache_scene.build_html(envelope, theme.lower())
             if built.get("ok"):
                 st.caption(
                     "The Cache Machine replays the engine's own events and "
@@ -296,7 +300,7 @@ with tab_simulator:
                 components_v1.html(built["html"], height=680)
             else:
                 components.render_empty_card(
-                    "3D view unavailable: " + built.get("reason", ""))
+                    "3D view unavailable: " + built.get("reason", ""), colors)
 
 # --- Experiments tab -----------------------------------------------------------------
 
@@ -306,7 +310,7 @@ with tab_experiments:
         components.render_empty_card(
             "No trace. Generate one with Bot 1, paste addresses, or load "
             "a sample in the Simulator tab — experiments run on the "
-            "current trace.")
+            "current trace.", colors)
     mode = st.radio(
         "Experiment mode",
         ["policy_comparison", "organization_comparison"],
@@ -347,7 +351,7 @@ with tab_experiments:
     record = state.experiment_record
     if record is None:
         components.render_empty_card(
-            "No experiment yet. Choose a mode and run.")
+            "No experiment yet. Choose a mode and run.", colors)
     else:
         label_key = "policy" if record["mode"] == "policy_comparison" \
             else "organization"
@@ -355,7 +359,7 @@ with tab_experiments:
         components.render_comparison_chart(
             [run["policy"] if label_key == "policy"
              else run["config"]["organization"] for run in record["runs"]],
-            [run["summary"] for run in record["runs"]])
+            [run["summary"] for run in record["runs"]], colors)
         with st.container(border=True):
             st.markdown("**Summary**")
             components.render_summary_text(record["summary_text"])
@@ -519,7 +523,7 @@ with tab_workflow:
                            mime="application/json")
     if not workflow:
         components.render_empty_card(
-            "No workflow run yet. Press “Run automated workflow” to start.")
+            "No workflow run yet. Press “Run automated workflow” to start.", colors)
 
 # --- Help tab ----------------------------------------------------------------------------
 

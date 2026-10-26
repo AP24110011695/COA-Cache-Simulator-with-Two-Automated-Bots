@@ -461,6 +461,35 @@ requested now returns `[]` instead of `null` (D-26). Evidence:
 
 ---
 
+## Post-delivery enhancement — Light/Dark theme (dark mode)
+
+**Status:** `DONE` (2026-10-27 — implemented and verified after delivery
+from the approved read-only dark-mode audit; presentation only, not a
+numbered phase, all ten phases remain `DONE`.)
+
+**Delivered:** Light/Dark selector at the top of the sidebar (Light
+default, session-state persistence across reruns and tab navigation;
+browser refresh resets to Light in V1 — accepted). Centralized dark
+palette in `ui/tokens.py` `THEMES` (WCAG-verified, test-asserted; light
+values asserted verbatim so the delivered appearance cannot drift);
+`ui/styles_dark.css` Streamlit-chrome overrides appended by
+`components.inject_styles(theme)`; theme-aware charts, status lines, state
+grid, and empty cards via a color namespace; 3D view themed through
+presentation-only payload metadata + `ui/scene_dark.css` + a scene palette
+in `scene_app.js`. Simulation data (events, snapshots, summaries, CSV,
+experiments) is byte-identical across themes — test-asserted, including
+E3 run identically in both themes. Accepted fallbacks: theme switch
+resets 3D playback to access 1 paused; `st.dataframe` canvases keep
+Streamlit's light rendering inside themed containers (Streamlit 1.66
+limitation). No engine changes; no dependencies added. Tests:
+`tests/test_theme.py` (15 tests — palette completeness + light regression,
+computed WCAG contrast, CSS bundles, 3D theme embedding and
+presentation-data separation, E3 identity across themes). Evidence:
+`docs/memory.md` §8 (D-27), `docs/design.md` §6.10,
+`docs/screenshots/theme-*.png`.
+
+---
+
 ## Execution rules
 
 - One phase per `Execute Phase N` command; stop after the phase report.

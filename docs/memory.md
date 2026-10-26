@@ -310,6 +310,25 @@
   the option was absent; `ui/cache_scene.py` treats `[]` as a valid empty
   animation. Verified: empty trace + option → `[]` (3D shows "Empty
   trace"); no option → `null` ("not captured"). Cache algorithm untouched.
+- **D-27 Dark mode (post-delivery enhancement, 2026-10-27):** Light/Dark
+  sidebar selector (`st.session_state` widget, Light default; resets on
+  browser refresh — accepted V1 limitation, no URL persistence per
+  approved decision). Implementation: `ui/tokens.py` gains `THEMES` +
+  `get_tokens` (dark palette WCAG-verified — text 14.73:1, secondary
+  8.13:1, accent 5.33:1, border 3.55:1 on #16181D);
+  `components.inject_styles(theme)` emits the base sheet plus
+  `ui/styles_dark.css` (Streamlit chrome overrides scoped to the verified
+  1.66 testids/classes — `.stApp`-prefixed to out-specify emotion styles);
+  matplotlib charts take a theme-color namespace (transparent figure bg);
+  `cache_scene.build_html(envelope, theme)` adds `payload["theme"]`
+  (presentation-only) and appends `ui/scene_dark.css`; `scene_app.js`
+  selects a scene palette from `P.theme` and sets `body.cm-dark`/`cm-light`.
+  Simulation data is theme-independent (test-asserted). Accepted fallback:
+  a theme switch rebuilds the 3D iframe, resetting playback to access 1
+  paused (same class as any payload change). Known V1 limitation: the
+  st.dataframe event-log canvas keeps Streamlit's light rendering (its
+  container is themed; a full-dark grid would need theme.base runtime
+  switching, which Streamlit 1.66 does not support).
 - **D-24 Phase-9 decisions (2026-10-25):**
   (a) Launch convention: the app is started from the `ui/` directory
   (`cd ui && python -m streamlit run app.py`) so `ui/.streamlit/config.toml`
@@ -922,6 +941,18 @@
     **zero warnings**; `mingw32-make -C engine test` — **729 checks,
     0 failures**; `python -m pytest tests -q` — **135 passed, 4 warnings
     in 3.45 s**. All ten phases remain `DONE`.
+
+  - 2026-10-27 (dark mode — post-delivery enhancement, presentation
+    only): `python -m pytest tests -q` — **pass: 167 passed, 4 warnings**
+    (15 new theme tests: palette completeness, WCAG contrast, CSS
+    bundles, presentation-only separation, E3 identical across themes).
+    `mingw32-make -C engine clean && all` — **zero warnings**;
+    `mingw32-make -C engine test` — **729 checks, 0 failures**. Browser
+    verification: Light→Dark→Light switching; dark simulation (E1 sample
+    4 hits/1 miss/AMAT 5.00 verified on screen); dark 3D playback to 3/5;
+    light restoration confirmed; oversize/empty-trace captions intact.
+    Engine untouched this round (D-26 fix was Phase-10-audit). See
+    `docs/screenshots/theme-*.png`.
 
 No test result may be claimed without being recorded in this section.
 

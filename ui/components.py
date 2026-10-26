@@ -6,6 +6,7 @@ CSS and matplotlib never drift.
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import matplotlib
 
@@ -17,12 +18,25 @@ import streamlit as st  # noqa: E402
 from ui import tokens  # noqa: E402
 
 _STYLES_PATH = Path(__file__).parent / "styles.css"
+_STYLES_DARK_PATH = Path(__file__).parent / "styles_dark.css"
 
 
-def inject_styles():
-    st.markdown(
-        f"<style>{_STYLES_PATH.read_text(encoding='utf-8')}</style>",
-        unsafe_allow_html=True)
+def theme_colors(theme="light"):
+    """Color namespace for the active theme ("light"/"dark"). Falls back to
+    the delivered Light palette for unknown values."""
+    return SimpleNamespace(**tokens.get_tokens(theme))
+
+
+def inject_styles(theme="light"):
+    """Injects the base stylesheet plus the theme bundle ("light" = the
+    delivered appearance, unchanged; "dark" = the palette and Streamlit
+    chrome overrides from ui/styles_dark.css). Presentation only.
+    Returns the combined CSS (test-friendly)."""
+    css = _STYLES_PATH.read_text(encoding="utf-8")
+    if theme == "dark":
+        css += "\n" + _STYLES_DARK_PATH.read_text(encoding="utf-8")
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+    return css
 
 
 def validate_config_early(config):
@@ -87,10 +101,11 @@ def render_error_card(error):
     st.error("\n".join(lines))
 
 
-def render_empty_card(message):
+def render_empty_card(message, colors=None):
     """Empty state: says what unlocks it (design.md 7)."""
+    colors = colors or theme_colors("light")
     with st.container(border=True):
-        st.markdown(f"<span style='color:{tokens.TEXT_SECONDARY}; "
+        st.markdown(f"<span style='color:{colors.TEXT_SECONDARY}; "
                     f"font-size:14px'>{message}</span>",
                     unsafe_allow_html=True)
 
@@ -116,11 +131,12 @@ def render_metric_cards(summary):
         column.metric(label, value)
 
 
-def render_confirmation_line(summary):
+def render_confirmation_line(summary, colors=None):
+    colors = colors or theme_colors("light")
     hits = summary["hits"]
     rate = summary["hit_rate"]
     if summary["accesses"] == 0:
-        st.markdown(f"<span style='color:{tokens.SUCCESS}; font-size:14px'>"
+        st.markdown(f"<span style='color:{colors.SUCCESS}; font-size:14px'>"
                     "Simulation complete — empty trace (0 accesses)."
                     f"</span>", unsafe_allow_html=True)
         return
@@ -130,7 +146,7 @@ def render_confirmation_line(summary):
         return f"{count} {plural_form or singular + 's'}"
 
     st.markdown(
-        f"<span style='color:{tokens.SUCCESS}; font-size:14px'>"
+        f"<span style='color:{colors.SUCCESS}; font-size:14px'>"
         f"Simulation complete — {plural(summary['accesses'], 'access', 'accesses')}, "
         f"{plural(hits, 'hit')} ({rate * 100:.2f}%)."
         f"</span>", unsafe_allow_html=True)
@@ -185,10 +201,11 @@ def render_event_table(events):
                        file_name="cache-events.csv", mime="text/csv")
 
 
-def render_state_grid(state, events):
+def render_state_grid(state, events, colors=None):
     """Cache-state grid: rows = sets, columns = ways; valid lines tinted,
     the most-recently-used line highlighted, and the engine's own
     explanation of the last access as the caption (design.md 6.4)."""
+    colors = colors or theme_colors("light")
     columns = max((len(ways) for ways in state["sets"]), default=0)
     grid = []
     styles = []
@@ -204,10 +221,10 @@ def render_state_grid(state, events):
                 grid_row[column] = f"tag {line['tag']} · blk {line['block']}"
                 if line.get("last_used_rank") == 1:
                     style_row[column] = (f"background-color: "
-                                         f"{tokens.SUCCESS_SOFT};")
+                                         f"{colors.SUCCESS_SOFT};")
                 else:
                     style_row[column] = (f"background-color: "
-                                         f"{tokens.ACCENT_SOFT};")
+                                         f"{colors.ACCENT_SOFT};")
             else:
                 grid_row[column] = "—"
                 style_row[column] = ""
@@ -226,8 +243,9 @@ def render_state_grid(state, events):
         st.caption(f"Last access: {events[-1]['explanation']}")
 
 
-def render_hit_rate_chart(events):
+def render_hit_rate_chart(events, colors=None):
     """Cumulative hit rate over the access number (design.md 6.7)."""
+    colors = colors or theme_colors("light")
     if not events:
         return
     access_numbers = []
@@ -240,35 +258,45 @@ def render_hit_rate_chart(events):
         access_numbers.append(event["n"])
         rates.append(hits / total)
     figure, axis = plt.subplots(figsize=(6.4, 2.6), dpi=150)
-    axis.plot(access_numbers, rates, color=tokens.ACCENT, linewidth=1.5)
-    axis.axhline(0.5, color=tokens.BORDER, linestyle="--", linewidth=0.8)
+    figure.patch.set_alpha(0)
+    axis.set_facecolor("none")
+    axis.plot(access_numbers, rates, color=colors.ACCENT, linewidth=1.5)
+    axis.axhline(0.5, color=colors.BORDER, linestyle="--", linewidth=0.8)
     axis.set_ylim(0, 1)
     axis.set_xlabel("Access number")
     axis.set_ylabel("Cumulative hit rate")
     axis.set_title("Cumulative hit rate", fontsize=10, loc="left")
     axis.spines["top"].set_visible(False)
     axis.spines["right"].set_visible(False)
-    axis.grid(axis="y", color=tokens.BORDER, linewidth=0.5)
-    axis.tick_params(labelsize=8)
+    axis.spines["bottom"].set_color(colors.BORDER)
+    axis.spines["left"].set_color(colors.BORDER)
+    axis.tick_params(labelsize=8, colors=colors.TEXT_SECONDARY)
+    axis.xaxis.label.set_color(colors.TEXT_SECONDARY)
+    axis.yaxis.label.set_color(colors.TEXT_SECONDARY)
+    axis.title.set_color(colors.TEXT)
+    axis.grid(axis="y", color=colors.BORDER, linewidth=0.5)
     st.pyplot(figure)
     plt.close(figure)
 
 
-def render_comparison_chart(labels, summaries):
+def render_comparison_chart(labels, summaries, colors=None):
     """Grouped bars: hits / misses / evictions per run (design.md 6.7)."""
+    colors = colors or theme_colors("light")
     count = len(labels)
     import numpy as np
     x = np.arange(count)
     width = 0.25
     figure, axis = plt.subplots(figsize=(6.4, 3.0), dpi=150)
+    figure.patch.set_alpha(0)
+    axis.set_facecolor("none")
     for offset, (series, color) in enumerate([
-            ("hits", tokens.CHART_HITS),
-            ("misses", tokens.CHART_MISSES),
-            ("evictions", tokens.CHART_EVICTIONS)]):
+            ("hits", colors.CHART_HITS),
+            ("misses", colors.CHART_MISSES),
+            ("evictions", colors.CHART_EVICTIONS)]):
         values = [summary[series] for summary in summaries]
         bars = axis.bar(x + (offset - 1) * width, values, width,
                         label=series.capitalize(), color=color)
-        axis.bar_label(bars, fontsize=7, padding=1)
+        axis.bar_label(bars, fontsize=7, padding=1, color=colors.TEXT)
     axis.set_xticks(x, labels, fontsize=8)
     axis.set_ylabel("Count")
     axis.set_title("Hits / misses / evictions per run", fontsize=10,
@@ -276,8 +304,12 @@ def render_comparison_chart(labels, summaries):
     axis.legend(loc="upper left", ncols=3, frameon=False, fontsize=8)
     axis.spines["top"].set_visible(False)
     axis.spines["right"].set_visible(False)
-    axis.grid(axis="y", color=tokens.BORDER, linewidth=0.5)
-    axis.tick_params(labelsize=8)
+    axis.spines["bottom"].set_color(colors.BORDER)
+    axis.spines["left"].set_color(colors.BORDER)
+    axis.tick_params(labelsize=8, colors=colors.TEXT_SECONDARY)
+    axis.yaxis.label.set_color(colors.TEXT_SECONDARY)
+    axis.title.set_color(colors.TEXT)
+    axis.grid(axis="y", color=colors.BORDER, linewidth=0.5)
     st.pyplot(figure)
     plt.close(figure)
 

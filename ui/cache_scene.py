@@ -30,7 +30,7 @@ _WALL_MAX_SLABS = 128       # memory-wall slabs drawn (rest covered by labels)
 _THREE_MIN = Path(__file__).parent / "static" / "three.min.js"
 _SCENE_JS = Path(__file__).parent / "scene_app.js"
 _SCENE_CSS = Path(__file__).parent / "scene.css"
-
+_SCENE_DARK_CSS = Path(__file__).parent / "scene_dark.css"
 
 def snapshot_limits(lines):
     """Per-trace snapshot limits for `lines` total cache lines (mirror of
@@ -140,22 +140,30 @@ def build_payload(envelope):
     return {"ok": True, "payload": payload}
 
 
-def build_html(envelope):
+def build_html(envelope, theme="light"):
     """Builds the self-contained 3D-view HTML for `envelope`. Deterministic:
-    the same envelope always produces the same HTML string."""
+    the same envelope and theme always produce the same HTML string. The
+    theme travels as presentation-only metadata (`payload["theme"]`) and
+    selects the themed scene assets — simulation fields are identical in
+    both themes."""
     result = build_payload(envelope)
     if not result.get("ok"):
         return result
-    payload = json.dumps(result["payload"], sort_keys=True).replace(
+    payload = result["payload"]
+    payload["theme"] = (theme or "light").lower()
+    payload_json = json.dumps(payload, sort_keys=True).replace(
         "</", "<\\/")  # keep </script> inside the JSON from closing the tag
+    scene_css = _SCENE_CSS.read_text(encoding="utf-8")
+    if payload["theme"] == "dark":
+        scene_css += "\n" + _SCENE_DARK_CSS.read_text(encoding="utf-8")
     html = (
         "<!DOCTYPE html><html><head><meta charset='utf-8'><style>"
-        + _SCENE_CSS.read_text(encoding="utf-8")
+        + scene_css
         + "</style></head><body>"
         + _OVERLAY_HTML
         + "<div id='cm-stage'></div>"
         + "<script>" + _THREE_MIN.read_text(encoding="utf-8") + "</script>"
-        + "<script>window.CACHE_PAYLOAD = " + payload + ";</script>"
+        + "<script>window.CACHE_PAYLOAD = " + payload_json + ";</script>"
         + "<script>" + _SCENE_JS.read_text(encoding="utf-8") + "</script>"
         + "</body></html>")
     return {"ok": True, "html": html}
