@@ -242,6 +242,31 @@ class TestWidthAndLimitRejections:
         assert response["error"]["code"] == "E_TRACE_INVALID"
         assert "256" in response["error"]["message"]
 
+    def test_conflict_base_congruence_exact_sequence(self):
+        # Audit-2 (§6): independently calculated exact sequence. Sets 2:
+        # base = start_block + ((target_set - start_block) mod sets)
+        # = 7 + ((0 - 7) mod 2) = 8 (first block >= 7 mapping to set 0);
+        # blocks 8, 10; block_size 2.
+        response = run({
+            "pattern": "conflict",
+            "config": ts.CONFIG_SET_ASSOCIATIVE,
+            "params": {"distinct_blocks": 2, "passes": 2, "target_set": 0,
+                       "start_block": 7},
+        })
+        assert response["ok"] is True
+        assert response["trace"]["addresses"] == [16, 20, 16, 20]
+        assert response["warnings"] == []
+
+    def test_sequential_exact_sequence(self):
+        response = run({
+            "pattern": "sequential",
+            "config": ts.CONFIG_SET_ASSOCIATIVE,
+            "params": {"start_address": 100, "count": 4, "stride_bytes": 7},
+        })
+        assert response["ok"] is True
+        assert response["trace"]["addresses"] == [100, 107, 114, 121]
+        assert response["trace"]["name"] == "sequential-100-4-7"
+
     def test_sequential_count_over_limit(self):
         response = run({
             "pattern": "sequential",

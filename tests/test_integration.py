@@ -92,6 +92,102 @@ class TestRetryTaxonomy:
         assert excinfo.value.code == "E_INTERNAL"
         assert len(calls) == 3
 
+    def test_empty_stdout_with_documented_exit_code_is_transient(self,
+                                                                 monkeypatch):
+        # Regression (2026-10-27 audit-2): the pre-fix engine could die with
+        # std::bad_alloc — empty stdout on the DOCUMENTED exit code 3. The
+        # client must treat that as transient, not accept it as a result.
+        calls = []
+
+        def crashing_spawn(exe, mode, payload_text, timeout_s):
+            calls.append(mode)
+            return 3, "", ""  # documented code, no envelope
+
+        monkeypatch.setattr(engine_client, "_spawn_attempt", crashing_spawn)
+        with pytest.raises(engine_client.EngineError) as excinfo:
+            engine_client.run_mode("simulate", {"config": {}, "trace": {}})
+        assert excinfo.value.code == "E_INTERNAL"
+        assert len(calls) == 3
+
+
+class TestOkEnvelopeShape:
+    """Transport-level ok-envelope shape validation (audit-2): a stale or
+    mismatched engine binary emitting a 'successful' envelope without its
+    contract fields must fail as E_INTERNAL at this boundary — never flow
+    through as a false success that crashes consumers with a KeyError."""
+
+    @staticmethod
+    def _ok_envelope(mode):
+        envelope = {"ok": True,
+                    "engine": {"name": "cache_sim", "version": "0.1.0"}}
+        if mode == "geometry":
+            envelope["geometry"] = ts.GEOMETRY_DEMO
+        else:
+            envelope.update({
+                "geometry": ts.GEOMETRY_DEMO,
+                "events": [],
+                "summary": {"accesses": 0, "hits": 0, "misses": 0,
+                            "evictions": 0, "hit_rate": None,
+                            "miss_rate": None, "trace_sha256": "0" * 64},
+                "state": {"sets": [], "snapshots": None},
+            })
+        return envelope
+
+    def test_complete_envelopes_are_accepted(self, monkeypatch):
+        for mode in ("version", "geometry", "simulate"):
+            def spawn(exe, m, payload_text, timeout_s, _mode=mode):
+                return 0, json.dumps(self._ok_envelope(_mode)), ""
+            monkeypatch.setattr(engine_client, "_spawn_attempt", spawn)
+            payload = ({} if mode == "version"
+                       else ts.CONFIG_SET_ASSOCIATIVE if mode == "geometry"
+                       else {"config": ts.CONFIG_SET_ASSOCIATIVE,
+                             "trace": {"name": "t", "addresses": []}})
+            assert engine_client.run_mode(mode, payload)["ok"] is True
+
+    def test_missing_summary_is_terminal_internal(self, monkeypatch):
+        calls = []
+        envelope = self._ok_envelope("simulate")
+        del envelope["summary"]
+
+        def spawn(exe, mode, payload_text, timeout_s):
+            calls.append(mode)
+            return 0, json.dumps(envelope), ""
+
+        monkeypatch.setattr(engine_client, "_spawn_attempt", spawn)
+        with pytest.raises(engine_client.EngineError) as excinfo:
+            engine_client.run_simulate({"config": ts.CONFIG_SET_ASSOCIATIVE,
+                                        "trace": {"name": "t",
+                                                  "addresses": []}})
+        assert excinfo.value.code == "E_INTERNAL"
+        assert "contract fields" in excinfo.value.message
+        assert len(calls) == 1  # terminal — retrying a stale exe is futile
+
+    def test_missing_engine_version_is_terminal_internal(self, monkeypatch):
+        envelope = self._ok_envelope("geometry")
+        envelope["engine"] = {"name": "cache_sim"}
+
+        def spawn(exe, mode, payload_text, timeout_s):
+            return 0, json.dumps(envelope), ""
+
+        monkeypatch.setattr(engine_client, "_spawn_attempt", spawn)
+        with pytest.raises(engine_client.EngineError) as excinfo:
+            engine_client.fetch_geometry(ts.CONFIG_SET_ASSOCIATIVE)
+        assert excinfo.value.code == "E_INTERNAL"
+
+    def test_wrongly_typed_events_is_terminal_internal(self, monkeypatch):
+        envelope = self._ok_envelope("simulate")
+        envelope["events"] = {"not": "a list"}
+
+        def spawn(exe, mode, payload_text, timeout_s):
+            return 0, json.dumps(envelope), ""
+
+        monkeypatch.setattr(engine_client, "_spawn_attempt", spawn)
+        with pytest.raises(engine_client.EngineError) as excinfo:
+            engine_client.run_simulate({"config": ts.CONFIG_SET_ASSOCIATIVE,
+                                        "trace": {"name": "t",
+                                                  "addresses": []}})
+        assert excinfo.value.code == "E_INTERNAL"
+
 
 # --- Missing engine (AC-P8.3) --------------------------------------------------
 
@@ -115,6 +211,15 @@ class TestMissingEngine:
         assert response["ok"] is False
         assert response["error"]["code"] == "E_INTERNAL"
         assert "mingw32-make" in response["error"]["message"]
+
+    def test_spawn_is_working_directory_independent(self, tmp_path,
+                                                    monkeypatch):
+        # Audit-2 (§8): the engine reads only stdin/stdout and the client
+        # spawns it by absolute path — the caller's cwd must not matter.
+        monkeypatch.chdir(tmp_path)
+        envelope = engine_client.run_mode("version", {})
+        assert envelope["ok"] is True
+        assert envelope["engine"]["version"] == "0.1.0"
 
 
 # --- Sample traces --------------------------------------------------------------

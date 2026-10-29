@@ -8,10 +8,14 @@ published E3/E5 outcomes (D-15) and the E2 organization comparison.
 
 import hashlib
 import json
+import os
+import threading
+from datetime import datetime, timezone
 
 import pytest
 
 import test_smoke as ts
+import bots.experiment_bot as eb
 from bots import engine_client
 from bots.experiment_bot import run_experiment, save_report
 from bots.trace_bot import generate as trace_generate
@@ -400,6 +404,310 @@ class TestSaveReport:
         target = tmp_path / "reports"
         path = save_report(response["record"], target)
         assert path.exists() and path.parent == target
+
+    def test_directory_path_occupied_by_a_file_raises_oserror(self, tmp_path):
+        # Audit-2 filesystem pass: `reports` exists as a FILE — mkdir must
+        # raise an OSError (FileExistsError), which the workflow's step 4
+        # catches as a failed step; it must never be swallowed here.
+        occupied = tmp_path / "reports"
+        occupied.write_text("not a directory", encoding="utf-8")
+        response = run_experiment(policy_request(),
+                                  canned_policy_simulate({"LRU": 1,
+                                                          "FIFO": 2,
+                                                          "RANDOM": 2}))
+        import pytest
+        with pytest.raises(OSError):
+            save_report(response["record"], occupied)
+
+    def test_unwritable_destination_raises_oserror(self, tmp_path,
+                                                   monkeypatch):
+        # Controlled fault injection at the exclusive-creation write: the
+        # write fails — save_report must propagate the OSError (no
+        # partial-file success status).
+        response = run_experiment(policy_request(),
+                                  canned_policy_simulate({"LRU": 1,
+                                                          "FIFO": 2,
+                                                          "RANDOM": 2}))
+
+        class FailingHandle:
+            def __init__(self, fd):
+                self._fd = fd
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                os.close(self._fd)
+                return False
+
+            def write(self, data):
+                raise PermissionError(13, "permission denied")
+
+        monkeypatch.setattr("os.fdopen",
+                            lambda fd, mode: FailingHandle(fd))
+        import pytest
+        with pytest.raises(OSError):
+            save_report(response["record"], tmp_path)
+
+    def test_failed_write_leaves_no_misleading_file(self, tmp_path,
+                                                    monkeypatch):
+        response = run_experiment(policy_request(),
+                                  canned_policy_simulate({"LRU": 1,
+                                                          "FIFO": 2,
+                                                          "RANDOM": 2}))
+        calls = []
+
+        class FailingHandle:
+            def __init__(self, fd):
+                self._fd = fd
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                os.close(self._fd)
+                return False
+
+            def write(self, data):
+                calls.append(self._fd)
+                raise OSError(28, "no space left on device")
+
+        monkeypatch.setattr("os.fdopen",
+                            lambda fd, mode: FailingHandle(fd))
+        import pytest
+        with pytest.raises(OSError):
+            save_report(response["record"], tmp_path)
+        assert len(calls) == 1  # one attempt, no silent retry/partial state
+        assert list(tmp_path.iterdir()) == []  # cleanup removed the partial
+
+
+# --- Report identity and collision safety (D-30) ------------------------------
+
+
+class _ControlledClock:
+    """Returns the queued stamps in order (repeats the last one); a
+    controlled clock for deterministic same-second reproduction."""
+
+    def __init__(self, stamps):
+        self._stamps = stamps
+        self._calls = 0
+
+    def now(self, tz=None):
+        value = self._stamps[min(self._calls, len(self._stamps) - 1)]
+        self._calls += 1
+        return value
+
+
+def _stamp(second_us):
+    return datetime(2026, 10, 27, 12, 0, 0, second_us, tzinfo=timezone.utc)
+
+
+class TestReportIdentity:
+    def test_same_second_experiments_get_distinct_ids_and_reports(
+            self, tmp_path, monkeypatch):
+        # D-30 regression: two different experiments completing in the same
+        # wall-clock second used to share one experiment_id and the second
+        # save silently overwrote the first report.
+        monkeypatch.setattr(
+            eb, "datetime",
+            _ControlledClock([_stamp(100000), _stamp(200000)]))
+        rec_a = run_experiment(
+            policy_request(trace={"name": "run-A",
+                                  "addresses": [0, 4, 0, 8, 4]}),
+            canned_policy_simulate({"LRU": 1, "FIFO": 1, "RANDOM": 1}))
+        rec_b = run_experiment(
+            policy_request(trace={"name": "run-B",
+                                  "addresses": [0, 4, 8, 12, 16]}),
+            canned_policy_simulate({"LRU": 2, "FIFO": 1, "RANDOM": 1}))
+        id_a, id_b = (r["record"]["experiment_id"] for r in (rec_a, rec_b))
+        assert id_a != id_b
+        # same second, distinct microsecond segments
+        assert id_a == "exp-20261027-120000-100000-policy"
+        assert id_b == "exp-20261027-120000-200000-policy"
+        path_a = save_report(rec_a["record"], tmp_path)
+        path_b = save_report(rec_b["record"], tmp_path)
+        assert path_a != path_b
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+            [path_a.name, path_b.name])
+        # saving the second experiment did not alter the first report
+        first = json.loads(path_a.read_text(encoding="utf-8"))
+        assert first == rec_a["record"]
+        assert first["trace"]["name"] == "run-A"
+
+    def test_id_filename_and_metadata_agree(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(eb, "datetime", _ControlledClock([_stamp(123456)]))
+        record = run_experiment(policy_request(),
+                                canned_policy_simulate({"LRU": 1, "FIFO": 2,
+                                                        "RANDOM": 2}))
+        record = record["record"]
+        path = save_report(record, tmp_path)
+        assert path.name == f"{record['experiment_id']}.json"
+        reloaded = json.loads(path.read_text(encoding="utf-8"))
+        assert reloaded["experiment_id"] == record["experiment_id"]
+        assert reloaded["created_utc"] == "2026-10-27T12:00:00Z"
+        # the id's second-resolution part encodes the created_utc second
+        assert record["experiment_id"].startswith("exp-20261027-120000-")
+
+    def test_identical_inputs_stay_reproducible(self, tmp_path,
+                                                monkeypatch):
+        # Documented determinism: identical inputs under identical
+        # conditions produce identical records, and re-saving the same
+        # record is an idempotent byte-identical write.
+        monkeypatch.setattr(eb, "datetime",
+                            _ControlledClock([_stamp(100000)]))
+        first = run_experiment(policy_request(),
+                               canned_policy_simulate({"LRU": 1, "FIFO": 2,
+                                                       "RANDOM": 2}))["record"]
+        second = run_experiment(policy_request(),
+                                canned_policy_simulate({"LRU": 1, "FIFO": 2,
+                                                        "RANDOM": 2}))["record"]
+        assert first == second
+        path1 = save_report(first, tmp_path)
+        bytes1 = path1.read_bytes()
+        path2 = save_report(second, tmp_path)  # same content: no raise
+        assert path2 == path1 and path2.read_bytes() == bytes1
+
+    def test_conflicting_destination_never_silently_overwritten(
+            self, tmp_path):
+        # A generated-ID collision with DIFFERENT content must fail loudly
+        # (FileExistsError is an OSError: the workflow's step 4 already
+        # handles it) and leave the existing report byte-identical.
+        rec_a = run_experiment(
+            policy_request(trace={"name": "run-A",
+                                  "addresses": [0, 4, 0, 8, 4]}),
+            canned_policy_simulate({"LRU": 1, "FIFO": 1, "RANDOM": 1}))
+        rec_b = run_experiment(
+            policy_request(trace={"name": "run-B",
+                                  "addresses": [0, 4, 8, 12, 16]}),
+            canned_policy_simulate({"LRU": 2, "FIFO": 1, "RANDOM": 1}))
+        forced = dict(rec_b["record"],
+                      experiment_id=rec_a["record"]["experiment_id"])
+        path = save_report(rec_a["record"], tmp_path)
+        original = path.read_bytes()
+        with pytest.raises(FileExistsError):
+            save_report(forced, tmp_path)
+        assert path.read_bytes() == original
+        assert json.loads(path.read_text(encoding="utf-8"))["trace"]["name"] \
+            == "run-A"
+        # idempotent re-save of the same record remains allowed
+        save_report(rec_a["record"], tmp_path)
+
+    def test_schema_accepts_microsecond_and_legacy_ids(self):
+        from jsonschema import Draft7Validator
+        schema = json.loads((ts.ROOT / "schemas" / "experiment.schema.json")
+                            .read_text(encoding="utf-8"))
+        validator = Draft7Validator(
+            schema["properties"]["experiment_id"])
+        for good in ("exp-20261027-120000-100000-policy",
+                     "exp-20261024-193000-policy",  # pre-D-30 record
+                     "exp-20261024-201725-organization_comparison"):
+            assert validator.is_valid(good), good
+        for bad in ("exp-20261027-1200-100000-policy",
+                    "exp-20261027-120000-100000-policy-extra",
+                    "EXP-20261027-120000-100000-POLICY",
+                    "exp-20261027-120000-policy-x9"):
+            assert not validator.is_valid(bad), bad
+
+
+class TestSaveReportAtomicity:
+    """Concurrent saves target the same path only under an id collision
+    (D-30 ids make that practically unreachable, and Streamlit sessions
+    are threads in one process — still, the no-overwrite guarantee must
+    not depend on timing). The guard is an atomic O_CREAT|O_EXCL create."""
+
+    @staticmethod
+    def _two_records():
+        rec_a = run_experiment(
+            policy_request(trace={"name": "run-A",
+                                  "addresses": [0, 4, 0, 8, 4]}),
+            canned_policy_simulate({"LRU": 1, "FIFO": 1, "RANDOM": 1}))
+        rec_b = run_experiment(
+            policy_request(trace={"name": "run-B",
+                                  "addresses": [0, 4, 8, 12, 16]}),
+            canned_policy_simulate({"LRU": 2, "FIFO": 1, "RANDOM": 1}))
+        return rec_a["record"], rec_b["record"]
+
+    def test_concurrent_identical_saves_all_succeed_idempotently(
+            self, tmp_path):
+        record = run_experiment(policy_request(),
+                                canned_policy_simulate({"LRU": 1, "FIFO": 2,
+                                                        "RANDOM": 2}))
+        record = record["record"]
+        expected = (json.dumps(record, indent=2, sort_keys=True) +
+                    "\n").encode("utf-8")
+        barrier = threading.Barrier(8)
+        results, errors = [], []
+
+        def saver():
+            barrier.wait()
+            try:
+                results.append(save_report(record, tmp_path))
+            except Exception as err:  # noqa: BLE001 — collected, not hidden
+                errors.append(err)
+
+        threads = [threading.Thread(target=saver) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert not errors, errors
+        assert len(results) == 8
+        assert all(path == results[0] for path in results)
+        assert results[0].read_bytes() == expected  # intact, never torn
+
+    def test_concurrent_conflicting_saves_cannot_overwrite(self, tmp_path):
+        rec_a, rec_b = self._two_records()
+        forced = dict(rec_b, experiment_id=rec_a["experiment_id"])
+        path = save_report(rec_a, tmp_path)
+        original = path.read_bytes()
+        barrier = threading.Barrier(6)
+        refusals = []
+
+        def saver():
+            barrier.wait()
+            try:
+                save_report(forced, tmp_path)
+            except FileExistsError:
+                refusals.append("refused")
+
+        threads = [threading.Thread(target=saver) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert len(refusals) == 6  # every conflicting save refused
+        assert path.read_bytes() == original  # original untouched
+
+    def test_first_save_race_yields_exactly_one_winner(self, tmp_path):
+        rec_a, rec_b = self._two_records()
+        forced_b = dict(rec_b, experiment_id=rec_a["experiment_id"])
+        barrier = threading.Barrier(2)
+        outcomes = {}
+
+        def saver(name, record):
+            barrier.wait()
+            try:
+                save_report(record, tmp_path)
+                outcomes[name] = "ok"
+            except FileExistsError:
+                outcomes[name] = "refused"
+
+        threads = [threading.Thread(target=saver, args=("a", rec_a)),
+                   threading.Thread(target=saver, args=("b", forced_b))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        # exactly one winner; the loser's content never landed
+        assert sorted(outcomes.values()) == ["ok", "refused"]
+        final = (tmp_path / f"{rec_a['experiment_id']}.json").read_bytes()
+        candidates = [
+            (json.dumps(rec_a, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+            (json.dumps(forced_b, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        ]
+        assert final in candidates  # one complete record, never interleaved
+        winner = rec_a if final == candidates[0] else forced_b
+        assert outcomes["a" if winner is rec_a else "b"] == "ok"
 
 
 # --- Integration with the real engine (Phase 7 task 6) -----------------------

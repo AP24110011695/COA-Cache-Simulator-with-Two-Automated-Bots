@@ -3,8 +3,9 @@
 > The verified, current state of the project. Updated after every meaningful
 > change. Facts below marked **verified** were actually executed/inspected on
 > the stated date; anything else is an assumption or limitation and is labeled.
-> Last updated: 2026-10-27 (**DELIVERED**; post-delivery: 3D view V1, dark
-> mode, reliability audit with four fixes — D-28).
+> Last updated: 2026-10-29 (**DELIVERED**; post-delivery: 3D view V1, dark
+> mode, reliability audit with four fixes — D-28, D-29/D-30 report
+> persistence, D-31 final verification + projdemo rewrite).
 
 ---
 
@@ -367,6 +368,150 @@
   boundary traces, plus ~60 validation cases) and 111 bot/scene checks —
   no engine or bot defects beyond the four above. pytest 167 → 172 (5
   regression tests). No commit/push performed.
+- **D-29 Adversarial reliability pass (2026-10-27, second audit):**
+  differential + metamorphic + fault-injection + mutation testing against
+  the already-committed D-28 state. One verified engine defect found and
+  fixed, plus two boundary hardenings; everything else confirmed clean.
+  1. **Engine crash fix (`engine/src/main.cpp`):** a VALID supported
+     configuration — capacity 2^20, block 1, direct-mapped (1,048,576
+     sets) with a 100,000-access trace — exhausted memory on a
+     constrained machine and died with an **uncaught `std::bad_alloc`**:
+     empty stdout, `terminate()`, abort exit code 3 — colliding with the
+     documented "validation" exit code and producing no contract
+     envelope. Root cause: the final-state JSON for a 2^20-line cache
+     (≈101 MB of text, several hundred MB of nlohmann structures) plus
+     100,000 event objects can exceed available RAM; nothing caught the
+     standard-library failure. Fix: the simulate/serialize/emit phase in
+     `run_simulate` is wrapped in try/catch — `std::bad_alloc` emits the
+     documented `E_INTERNAL` envelope ("the engine ran out of memory
+     …") with exit 4; any other `std::exception` emits
+     `E_INTERNAL` with `what()`. Contract-conformant failure on any
+     machine (bigger-RAM machines may legitimately succeed with ok:true
+     — the regression test accepts both branches and asserts the
+     envelope contract). The final emit was initially left outside the
+     try (the 101 MB `dump()` threw there) — caught in review-by-test.
+  2. **Transport hardening (`bots/engine_client.py`):** ok-envelopes are
+     now shape-validated per mode (simulate: engine/geometry/events/
+     summary/state with types; geometry: engine/geometry; version:
+     engine) — a stale or mismatched engine binary emitting a
+     "successful" envelope missing its contract fields now fails as
+     terminal `E_INTERNAL` at the client boundary instead of flowing
+     through as a false success that would KeyError later consumers.
+  3. **Scene-payload hardening (`ui/cache_scene.py`):** `build_payload`
+     refuses envelopes whose snapshot count disagrees with the event
+     count (the JS reads `snapshots[k-1]` by index; a mismatch would
+     desynchronize the scene from the real accesses).
+  Evidence from the pass: independent test-only Python reference model
+  (exact mt19937 replication — seed 12345 first draw 3992670690
+  confirmed) agreed with the engine on **496,980 checks over 946 runs /
+  39,640 events** (every event field, final state incl. ranks, counters,
+  rng draws, every per-access snapshot); metamorphic invariances
+  (snapshots/AMAT-off/byte-identical rerun/resident-block
+  re-access/prefix-event agreement/final-snapshot==state) all hold;
+  adversarial field limits (2^62/2^64-1 capacity values, seed 2^32-1
+  accepted & 2^32 rejected, float-where-int rejected, nulls rejected,
+  inf hit_time rejected at the JSON boundary as E_JOB_INVALID, u64
+  address extremes) behave per contract; 100k-access timing < 1 s;
+  CLI/exit-code/`--out` contract verified. **Mutation testing (scratch
+  copies, never the real build):** LRU→MRU killed by the engine suite
+  (18 failures), missing eviction-counter increment killed (26
+  failures), digest canonical-prefix change survived `engine_tests`
+  (0 failures) but is killed by pytest (3 failures — the digest is
+  pinned against independent hashlib values only at the Python layer).
+  ruff (pyflakes/bugbear subset): production code clean; 2 nits in new
+  test code fixed; B904 raise-from chains in `engine_client` are
+  pre-existing intentional style (left unchanged). Streamlit 1.66
+  auto-fixes the mixed str/int "evicted block" dataframe column
+  ("Applying automatic fixes", logged only — the table renders; CSV
+  unaffected) — accepted behavior, documented here rather than changed.
+  Known accepted limitation: `experiment_id` has second resolution, so
+  two DIFFERENT experiments completing within the same wall-clock
+  second would collide on the report filename (same-second reruns of
+  identical input are byte-identical and harmless); observed reachability
+  requires sub-second back-to-back runs — documented, not redesigned.
+  (RESOLVED by D-30 the same day: microsecond id segment + schema
+  pattern widened + non-overwriting `save_report`; the historical
+  explanation above is preserved for context.)
+  pytest 172 → **194** (22 new: 9 AppTest UI-sequence tests incl. the
+  failure→retry→recovery path with engine-call counting, 5
+  ok-envelope-shape + empty-stdout transient, 4 save_report filesystem
+  failures, 1 snapshot-alignment, 1 engine extreme-state regression,
+  2 Bot 1 exact-sequence). Engine suite 729 checks / 0 failures.
+  Sanitizer note: MinGW.org GCC 6.3 does not support ASan/UBSan builds —
+  overflow/shift safety was reviewed by reading the arithmetic (all
+  address math is uint64 with explicit width==64 guard) and by the
+  differential/limit testing above, not by sanitizer run. No commit or
+  push performed; the unrelated untracked `imulator"` file untouched.
+- **D-30 Experiment-ID collision fix (2026-10-27):** resolution of the
+  D-29 known limitation. Reproduced deterministically with a controlled
+  clock (`bots.experiment_bot.datetime` patched to a frozen timestamp):
+  two different experiments created in the same wall-clock second
+  received the identical `experiment_id` (`exp-YYYYMMDD-HHMMSS-mode`),
+  resolved to the same `reports/<id>.json` path, and the second
+  `save_report` silently overwrote the first report — losing it while
+  the UI still displayed the first record. Why the fix was made: the id
+  is the sole report filename key, the incident was reachable in
+  principle from back-to-back runs, and the loss was silent. Fix
+  (smallest change preserving contracts):
+  (1) `experiment_id` gains a 6-digit microsecond segment
+  (`exp-YYYYMMDD-HHMMSS-ffffff-mode`) — wall-clock based like the
+  existing `created_utc` (no in-memory counter, no randomness;
+  experiments are created sequentially in one process and each involves
+  multiple engine subprocesses, so same-microsecond completion is
+  unreachable in practice);
+  (2) `schemas/experiment.schema.json` pattern widened to
+  `^exp-[0-9]{8}-[0-9]{6}(-[0-9]{6})?-[a-z_]+$` — the historical
+  second-resolution format (e.g. `docs/demo-record.json` and every
+  pre-D-30 report) remains valid, so no consumer changes;
+  (3) `save_report` never silently overwrites a destination holding
+  DIFFERENT content — it raises `FileExistsError` (an OSError, so the
+  workflow's step-4 handler already treats it as a failed step with
+  steps 1-3 preserved); re-saving the identical record stays allowed
+  (idempotent, byte-identical);
+  (4) the Experiments tab "Save report" button, previously unguarded,
+  now surfaces save failures as an error card (design.md 7) instead of
+  a traceback. `architecture.md` §6.9 documents the new format and the
+  no-overwrite rule; the schema description carries the rationale.
+  Report determinism is unaffected: identical inputs under identical
+  conditions still produce identical records, and `summary_text`
+  determinism is untouched. Regression tests (5, in
+  `TestReportIdentity`): distinct ids + separate reports + first report
+  intact under a controlled same-second clock; id↔filename↔serialized
+  metadata agreement; frozen-clock identical-input reproducibility with
+  idempotent re-save; conflicting-destination refusal leaving the
+  existing file byte-identical; schema accepts microsecond + legacy ids
+  and rejects malformed variants. pytest 194 → **199**.
+  **Atomicity hardening (same day, concurrency review):** the original
+  D-30 guard was a check-then-write sequence (`path.exists()`/`read_text`
+  then unconditional `write_text`) — a TOCTOU race in which two
+  concurrent saves of different content under one id could both pass the
+  check and the last writer silently won (Streamlit runs sessions as
+  threads, so concurrent saves are reachable). `save_report` now creates
+  the destination atomically with `os.open(O_WRONLY|O_CREAT|O_EXCL)`
+  (honored on POSIX and Windows) and writes through that exclusive
+  handle: exactly one concurrent save wins, losers get `FileExistsError`,
+  and a refused save never modifies the original. A bounded 0.5 s poll in
+  the `EEXIST` path keeps concurrent identical saves idempotent (the
+  winner may still be mid-write), and a failed write unlinks the file it
+  exclusively created so no misleading partial report survives. Bytes are
+  now LF on all platforms (written via `O_BINARY` binary handle;
+  `read_text` normalization keeps legacy CRLF pre-D-30 reports
+  idempotent). Regression tests: `TestSaveReportAtomicity` (concurrent
+  identical saves all succeed idempotently with intact bytes; six
+  concurrent conflicting saves all refused with the original
+  byte-identical; a true first-save race yields exactly one winner and
+  one complete record — 10 repeat runs, no flakiness), and the two
+  fault-injection tests now inject at the new write point (`os.fdopen`).
+  pytest 199 → **202**.
+- **D-31 Final project-wide verification + demonstration-guide rewrite
+  (2026-10-29):** no code changes; the delivered state was re-verified
+  from scratch (suites, from-scratch builds in Git Bash AND PowerShell,
+  31 direct engine-CLI checks against E1–E6, 40 end-to-end Bot 2 checks
+  against `docs/demo-record.json`, and a live browser walkthrough of the
+  whole demo sequence). No defects found. `docs/projdemo.md` was rewritten
+  from that evidence — the previous copy still claimed "135 tests" and
+  omitted the Theme control, the D-30 report behavior, and the 3D limits.
+  Evidence recorded in §8 (2026-10-29 entry).
 - **D-24 Phase-9 decisions (2026-10-25):**
   (a) Launch convention: the app is started from the `ui/` directory
   (`cd ui && python -m streamlit run app.py`) so `ui/.streamlit/config.toml`
@@ -1010,6 +1155,73 @@
     unchanged; malformed sample file → `E_TRACE_INVALID` card with prior
     results preserved; Experiments policy comparison + Save report.
     Engine C++ untouched this round.
+
+  - 2026-10-27 (adversarial reliability pass, D-29): baseline re-verified
+    first (**172 passed**; engine **729 checks, 0 failures**). Then the
+    differential/metamorphic/adversarial campaign (D-29 for details).
+    Post-fix regression: `python -m pytest tests -q` — **194 passed, 4
+    warnings** (22 new tests; `tests/test_app_sequences.py` adds the
+    project's first AppTest-level UI coverage); `mingw32-make -C engine
+    test` — **729 checks, 0 failures**; `mingw32-make -C engine all` —
+    rebuilt clean (engine fix), zero warnings. Browser re-verification
+    after all changes: the D-28 incident workflow (fully associative
+    16/16, width 13, FIFO, blocks 8 × passes 11, seed 5457) completes
+    all four steps DONE with the report saved; a normal 32-access
+    simulation (24 hits / 8 misses / 7 evictions / AMAT 6.00 — hand
+    checked); 3D playback stepped to 2/32 with consistent counters;
+    Light→Dark→Light with metrics intact.
+
+  - 2026-10-29 (final project-wide verification + `projdemo.md` rewrite,
+    D-31): evidence-based re-verification of the delivered state with no
+    code changes. Baseline: `python -m pytest tests -q` — **202 passed,
+    4 warnings** (202nd-test state incl. the atomicity tests; warnings are
+    the known pytest-asyncio/jsonschema deprecations); `mingw32-make -C
+    engine test` — **729 checks, 0 failures across 17 sections** (100k-
+    access simulate 0.083 s). From-scratch `clean` + `all` rebuild verified
+    in BOTH Git Bash and PowerShell (zero warnings, `build/cache_sim.exe`
+    produced; PowerShell also verified for `pytest`, the UI launch, and
+    `--server.port`). Independent checks (scratch scripts, not committed):
+    31 direct engine-CLI assertions reproducing E1–E6 (incl. exact E3 LRU
+    per-access explanations, E5 seed-7 final state, geometry fields,
+    error-envelope shapes and the empty-trace/null-rates contract), and 40
+    end-to-end Bot 2 assertions (policy comparison byte-identical to
+    `docs/demo-record.json` incl. `summary_text`, microsecond `experiment_id`,
+    idempotent re-save, conflicting-destination refusal leaving the original
+    byte-identical, org-comparison caveat, refusals, schema validation).
+    Live browser walkthrough of the full demo sequence: startup/empty
+    states, sample load, E3 LRU metrics (5/1/4/2, 20.00%, AMAT 17.00),
+    event log + state grid captions, 3D view counters matching engine
+    events during stepped playback, Light→Dark→Light (metrics intact; 3D
+    resets per D-27), policy comparison table with bolded best rates,
+    "Save report" writing a microsecond-id file, automated workflow with
+    four DONE steps (conflict-4b-set0-p1: 4 accesses, 0 hits, 2 evictions,
+    AMAT 21.00 — hand checked), E_TRACE_INVALID error card for an invalid
+    manual paste with earlier results preserved, and the invalid-config
+    sidebar message with disabled buttons. Static checks: pyflakes (F)
+    clean over bots/ui/tests; the only lint findings are the documented
+    accepted-style items (B904 chains, B905 zip) — ruff's default full
+    rule set (v0.16, no project config) reports 40 style-only findings and
+    is NOT the project gate. `docs/projdemo.md` was rewritten end-to-end
+    from this verified evidence (D-30 id format, theme behavior, D-25 3D
+    limits/fallbacks, current test counts — the previous copy still said
+    "135 tests" and omitted the theme). No defects found; no source file
+    modified; the pre-existing working-tree changes and the two stray
+    untracked files (`imulator"`, `tatus --short`) were left untouched.
+
+  - 2026-10-27 (report-persistence closure, D-30): collision reproduced
+    with a controlled clock, then fixed and regression-tested. Focused
+    run of all seven prior-fix test groups plus the new
+    `TestReportIdentity` — **34 passed**. Final: `python -m pytest
+    tests -q` — **199 passed, 4 warnings**; `mingw32-make -C engine
+    test` — **729 checks, 0 failures**; `mingw32-make -C engine all` —
+    up to date (no engine changes this round). The workflow's
+    report-save path (now writing microsecond-precision ids) is
+    exercised end-to-end against the real engine and real `reports/`
+    directory by the AppTest workflow-sequence tests (both green), and
+    the Experiments tab's real-engine schema validation covers the new
+    id format (`test_record_validates_against_schema`). The audit-2
+    browser session above predates D-30; no UI-facing rendering changed
+    in this round (only the save-button guard and id text).
 
 No test result may be claimed without being recorded in this section.
 

@@ -88,6 +88,38 @@ def _parse_envelope(stdout):
     return envelope
 
 
+# Required members of an ok envelope per mode (architecture.md 6.2-6.7).
+# Transport-level shape validation: a stale or mismatched engine binary
+# that emits a "successful" envelope missing its contract fields must
+# produce a clear E_INTERNAL at this boundary — never a false success that
+# crashes later consumers with a KeyError.
+_OK_ENVELOPE_FIELDS = {
+    "version": ("engine",),
+    "geometry": ("engine", "geometry"),
+    "simulate": ("engine", "geometry", "events", "summary", "state"),
+}
+
+
+def _ok_envelope_complete(mode, envelope):
+    """True when the ok envelope carries the mode's contract fields with
+    the documented shapes (architecture.md 6.3-6.7)."""
+    engine_meta = envelope.get("engine")
+    if not isinstance(engine_meta, dict) or \
+            not isinstance(engine_meta.get("version"), str) or \
+            not engine_meta["version"]:
+        return False
+    for field in _OK_ENVELOPE_FIELDS.get(mode, ()):  # unknown modes: lenient
+        value = envelope.get(field)
+        if field == "engine":
+            continue  # already checked above
+        if field == "events":
+            if not isinstance(value, list):
+                return False
+        elif not isinstance(value, dict):
+            return False
+    return True
+
+
 def run_mode(mode, payload, timeout_s=_DEFAULT_TIMEOUT_S,
              max_retries=_DEFAULT_MAX_RETRIES):
     """Runs `cache_sim --mode <mode>` with the payload on stdin.
@@ -125,6 +157,17 @@ def run_mode(mode, payload, timeout_s=_DEFAULT_TIMEOUT_S,
                 f"engine exit code {returncode} contradicts the envelope",
                 [_issue_like("returncode", "must agree with envelope.ok",
                              returncode)])
+        if envelope_ok and not _ok_envelope_complete(mode, envelope):
+            # Terminal: a stale/broken engine binary will not fix itself on
+            # retry (rules.md 3 — retries are for transient spawn/IO only).
+            raise EngineError(
+                "E_INTERNAL",
+                f"engine ok envelope is missing its {mode}-mode contract "
+                "fields (stale or mismatched engine binary?)",
+                [_issue_like("envelope",
+                             "missing required fields: "
+                             + ", ".join(_OK_ENVELOPE_FIELDS.get(mode, ())),
+                             sorted(envelope.keys()))])
         last_transient = None
         break
     if last_transient is not None:

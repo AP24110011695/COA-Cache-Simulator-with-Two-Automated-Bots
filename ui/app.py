@@ -394,7 +394,16 @@ with tab_experiments:
             st.caption(f"Report saved to {saved}")
         columns = st.columns(2)
         if columns[0].button("Save report", key="save_report"):
-            state.report_path = save_report(record, _REPORTS_DIR)
+            # A save failure (including a conflicting-destination refusal,
+            # D-30) must surface as an error card, never a traceback — and
+            # must not discard the displayed record.
+            try:
+                state.report_path = save_report(record, _REPORTS_DIR)
+            except OSError as err:
+                state.experiment_error = {
+                    "code": "E_INTERNAL",
+                    "message": f"the report could not be saved: {err}",
+                    "details": []}
             st.rerun()
         record_json = json.dumps(record, indent=2, sort_keys=True)
         columns[1].download_button("Download record (JSON)",

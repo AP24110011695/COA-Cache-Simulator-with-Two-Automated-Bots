@@ -17,7 +17,10 @@ reproducible experiment record. Responsibilities and limits:
   (E_JOB_INVALID), empty traces (E_TRACE_INVALID).
 """
 
+import errno
 import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -71,12 +74,50 @@ def save_report(record, directory):
     """Writes the record as `<directory>/<experiment_id>.json` with
     deterministic bytes (sorted keys, 2-space indent, trailing newline).
     Returns the written path. The caller decides the directory (rules.md 4;
-    the production location is `reports/`)."""
+    the production location is `reports/`).
+
+    The write is an atomic no-clobber creation (`O_CREAT | O_EXCL`, honored
+    on POSIX and Windows), so two concurrent saves of DIFFERENT content
+    under one experiment_id can never overwrite each other — exactly one
+    wins and the loser raises FileExistsError; the original file is never
+    modified by a refused save. Saving the identical record is idempotent
+    (a short bounded poll tolerates a winner that is still mid-write).
+    """
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{record['experiment_id']}.json"
-    path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n",
-                    encoding="utf-8")
+    payload = json.dumps(record, indent=2, sort_keys=True) + "\n"
+    data = payload.encode("utf-8")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                     getattr(os, "O_BINARY", 0), 0o666)
+    except FileExistsError:
+        # Lost the creation race, or the file predates this save. Poll
+        # briefly so a concurrent identical save stays idempotent (the
+        # winner may not have finished writing yet), then fail loudly on a
+        # real content conflict — never overwriting the original.
+        for _ in range(50):
+            if path.read_text(encoding="utf-8") == payload:
+                return path
+            time.sleep(0.01)
+        raise FileExistsError(
+            errno.EEXIST,
+            f"a different report already exists for experiment_id "
+            f"{record['experiment_id']!r}; not overwriting it (remove the "
+            f"stale file or re-run the experiment)", str(path))
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+    except OSError:
+        # This file was exclusively created by THIS save, so a failed write
+        # must not leave a misleading empty/partial report behind. The
+        # primary error is re-raised; only the best-effort cleanup is
+        # allowed to fail silently.
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -172,7 +213,12 @@ def _run_experiment(request, simulate_fn):
                             "miss_penalty": config["miss_penalty"],
                             "unit": "cycles"}
     return {
-        "experiment_id": f"exp-{created:%Y%m%d-%H%M%S}-{mode_word}",
+        # Microsecond precision (D-30): two different experiments completing
+        # in the same wall-clock second must never share an id and overwrite
+        # each other's report files. The schema accepts the historical
+        # second-resolution format for records saved before D-30.
+        "experiment_id": f"exp-{created:%Y%m%d-%H%M%S}-"
+                         f"{created.microsecond:06d}-{mode_word}",
         "mode": mode,
         "created_utc": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "engine_version": versions.pop(),

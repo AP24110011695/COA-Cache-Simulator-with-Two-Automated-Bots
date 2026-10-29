@@ -338,32 +338,50 @@ int run_simulate(const Options& opts) {
     }
   }
 
-  // Simulation.
-  engine::SimulateResult result;
-  if (!engine::simulate(config, geometry, tv.trace.addresses,
-                        include_state_after_each, &result)) {
-    emit(error_envelope("E_INTERNAL", "internal invariant violation"),
+  // Simulation. Large supported configurations (e.g. a 2^20-line cache with
+  // a 100,000-access trace) can legitimately exhaust memory on constrained
+  // machines; a standard-library failure must still produce a contract
+  // envelope (E_INTERNAL, exit 4) — never an uncaught std::bad_alloc crash
+  // with an empty stdout and an undocumented exit code.
+  json envelope = success_envelope();
+  try {
+    engine::SimulateResult result;
+    if (!engine::simulate(config, geometry, tv.trace.addresses,
+                          include_state_after_each, &result)) {
+      emit(error_envelope("E_INTERNAL", "internal invariant violation"),
+           opts.out_path);
+      return kExitInternal;
+    }
+
+    envelope["echo"] = *cfg_it;
+    envelope["geometry"] = engine::geometry_to_json(geometry, config);
+    json events = json::array();
+    for (const auto& e : result.events) {
+      events.push_back(engine::event_to_json(e, config));
+    }
+    envelope["events"] = events;
+    envelope["summary"] = engine::build_summary(config, result.counts,
+                                                result.rng_draws,
+                                                tv.trace.addresses);
+    envelope["state"] = engine::state_to_json(result.final_state,
+                                              result.snapshots,
+                                              engine::policy_from_config(config),
+                                              result.snapshots_requested);
+    emit(envelope, opts.out_path);
+    return kExitOk;
+  } catch (const std::bad_alloc&) {
+    emit(error_envelope("E_INTERNAL",
+                        "the engine ran out of memory producing the result "
+                        "for this configuration and trace; use a smaller "
+                        "cache or trace", json::array()),
+         opts.out_path);
+    return kExitInternal;
+  } catch (const std::exception& err) {
+    emit(error_envelope("E_INTERNAL",
+                        std::string("internal error: ") + err.what()),
          opts.out_path);
     return kExitInternal;
   }
-
-  json envelope = success_envelope();
-  envelope["echo"] = *cfg_it;
-  envelope["geometry"] = engine::geometry_to_json(geometry, config);
-  json events = json::array();
-  for (const auto& e : result.events) {
-    events.push_back(engine::event_to_json(e, config));
-  }
-  envelope["events"] = events;
-  envelope["summary"] = engine::build_summary(config, result.counts,
-                                              result.rng_draws,
-                                              tv.trace.addresses);
-  envelope["state"] = engine::state_to_json(result.final_state,
-                                            result.snapshots,
-                                            engine::policy_from_config(config),
-                                            result.snapshots_requested);
-  emit(envelope, opts.out_path);
-  return kExitOk;
 }
 
 }  // namespace

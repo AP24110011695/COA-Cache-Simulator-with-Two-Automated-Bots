@@ -366,7 +366,7 @@ Bot 1 output is deterministic: identical requests ⇒ identical traces.
 
 ```json
 {
-  "experiment_id": "exp-20261024-193000-policy",
+  "experiment_id": "exp-20261024-193000-123456-policy",
   "mode": "policy_comparison",
   "created_utc": "2026-10-24T19:30:00Z",
   "engine_version": "0.1.0",
@@ -394,6 +394,14 @@ Bot 1 output is deterministic: identical requests ⇒ identical traces.
   (`E_CONFIG_INVALID` at Bot 2 level), never a misleading table.
 - `summary_text` is generated only from run data (fixed sentence templates,
   numbers interpolated) — deterministic for identical records.
+- `experiment_id` is `exp-<UTC date>-<UTC hhmmss>-<microseconds>-<mode>`
+  (decision D-30): the microsecond segment makes a same-second collision —
+  two different experiments sharing an id and overwriting each other's
+  report file — unreachable in practice. Records saved before D-30 use the
+  historical second-resolution form `exp-<date>-<hhmmss>-<mode>`; both
+  forms match the schema pattern, and `save_report` additionally refuses
+  to silently overwrite a destination that already holds different
+  content.
 - Records are saved to `reports/<experiment_id>.json`; the UI also offers a
   download button. Every run embeds the engine version; a record is reproducible
   if re-running its trace/configs/seed(s) on the same engine version reproduces

@@ -217,6 +217,31 @@ class TestSimulateMode:
         assert proc.returncode == 3
         assert json.loads(proc.stdout)["error"]["code"] == "E_JOB_INVALID"
 
+    def test_extreme_state_demand_never_crashes(self, tmp_path):
+        # Regression (2026-10-27 audit-2): a VALID supported configuration
+        # (2^20-line cache, 100,000-access trace) exhausted memory and died
+        # with an uncaught std::bad_alloc — empty stdout and the abort exit
+        # code, colliding with the documented validation code 3. The engine
+        # must always return a contract envelope: ok success, or a
+        # structured E_INTERNAL with the documented exit code 4.
+        job = {"config": {"capacity_bytes": 1048576, "block_size_bytes": 1,
+                          "organization": "direct", "address_width_bits": 21},
+               "trace": {"name": "huge-state",
+                         "addresses": [(7 * i) & 0x1FFFFF
+                                       for i in range(100000)]}}
+        f = tmp_path / "huge-job.json"
+        f.write_text(json.dumps(job), encoding="utf-8")
+        proc = subprocess.run(
+            [str(ENGINE), "--mode", "simulate", "--in", str(f)],
+            capture_output=True, text=True, timeout=120)
+        envelope = json.loads(proc.stdout)  # stdout must be a contract envelope
+        if envelope["ok"] is True:
+            assert proc.returncode == 0
+            assert envelope["summary"]["accesses"] == 100000
+        else:
+            assert proc.returncode == 4
+            assert envelope["error"]["code"] == "E_INTERNAL"
+
     def test_missing_trace_rejected(self, tmp_path):
         job = {"config": CONFIG_DIRECT}
         proc = self._run_job(job, tmp_path)

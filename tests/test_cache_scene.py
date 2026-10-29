@@ -147,6 +147,17 @@ class TestPayloadBuilder:
         assert result["ok"] is False
         assert "snapshots were not captured" in result["reason"]
 
+    def test_snapshot_event_count_disagreement_refused(self):
+        # Audit-2 adversarial pass: the engine emits one snapshot per access
+        # (architecture.md 6.7). A mismatched envelope must be refused at
+        # the builder boundary — replaying it would desynchronize the scene
+        # from the real accesses (the JS reads snapshots[k-1] by index).
+        envelope = json.loads(json.dumps(self.ENVELOPE))
+        envelope["state"]["snapshots"] = envelope["state"]["snapshots"][:-1]
+        result = cache_scene.build_payload(envelope)
+        assert result["ok"] is False
+        assert "do not match" in result["reason"]
+
     def test_empty_trace_is_supported(self):
         envelope = json.loads(json.dumps(self.ENVELOPE))
         envelope["events"] = []

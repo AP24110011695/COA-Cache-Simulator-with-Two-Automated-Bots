@@ -1,0 +1,1053 @@
+warning: in the working copy of 'bots/engine_client.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'bots/experiment_bot.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/architecture.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'docs/memory.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'engine/src/main.cpp', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'schemas/experiment.schema.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_cache_scene.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_experiment_bot.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_integration.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_smoke.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_trace_bot.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'ui/app.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'ui/cache_scene.py', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/bots/engine_client.py b/bots/engine_client.py[m
+[1mindex 00702d8..d420048 100644[m
+[1m--- a/bots/engine_client.py[m
+[1m+++ b/bots/engine_client.py[m
+[36m@@ -88,6 +88,38 @@[m [mdef _parse_envelope(stdout):[m
+     return envelope[m
+ [m
+ [m
+[32m+[m[32m# Required members of an ok envelope per mode (architecture.md 6.2-6.7).[m
+[32m+[m[32m# Transport-level shape validation: a stale or mismatched engine binary[m
+[32m+[m[32m# that emits a "successful" envelope missing its contract fields must[m
+[32m+[m[32m# produce a clear E_INTERNAL at this boundary — never a false success that[m
+[32m+[m[32m# crashes later consumers with a KeyError.[m
+[32m+[m[32m_OK_ENVELOPE_FIELDS = {[m
+[32m+[m[32m    "version": ("engine",),[m
+[32m+[m[32m    "geometry": ("engine", "geometry"),[m
+[32m+[m[32m    "simulate": ("engine", "geometry", "events", "summary", "state"),[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _ok_envelope_complete(mode, envelope):[m
+[32m+[m[32m    """True when the ok envelope carries the mode's contract fields with[m
+[32m+[m[32m    the documented shapes (architecture.md 6.3-6.7)."""[m
+[32m+[m[32m    engine_meta = envelope.get("engine")[m
+[32m+[m[32m    if not isinstance(engine_meta, dict) or \[m
+[32m+[m[32m            not isinstance(engine_meta.get("version"), str) or \[m
+[32m+[m[32m            not engine_meta["version"]:[m
+[32m+[m[32m        return False[m
+[32m+[m[32m    for field in _OK_ENVELOPE_FIELDS.get(mode, ()):  # unknown modes: lenient[m
+[32m+[m[32m        value = envelope.get(field)[m
+[32m+[m[32m        if field == "engine":[m
+[32m+[m[32m            continue  # already checked above[m
+[32m+[m[32m        if field == "events":[m
+[32m+[m[32m            if not isinstance(value, list):[m
+[32m+[m[32m                return False[m
+[32m+[m[32m        elif not isinstance(value, dict):[m
+[32m+[m[32m            return False[m
+[32m+[m[32m    return True[m
+[32m+[m
+[32m+[m
+ def run_mode(mode, payload, timeout_s=_DEFAULT_TIMEOUT_S,[m
+              max_retries=_DEFAULT_MAX_RETRIES):[m
+     """Runs `cache_sim --mode <mode>` with the payload on stdin.[m
+[36m@@ -125,6 +157,17 @@[m [mdef run_mode(mode, payload, timeout_s=_DEFAULT_TIMEOUT_S,[m
+                 f"engine exit code {returncode} contradicts the envelope",[m
+                 [_issue_like("returncode", "must agree with envelope.ok",[m
+                              returncode)])[m
+[32m+[m[32m        if envelope_ok and not _ok_envelope_complete(mode, envelope):[m
+[32m+[m[32m            # Terminal: a stale/broken engine binary will not fix itself on[m
+[32m+[m[32m            # retry (rules.md 3 — retries are for transient spawn/IO only).[m
+[32m+[m[32m            raise EngineError([m
+[32m+[m[32m                "E_INTERNAL",[m
+[32m+[m[32m                f"engine ok envelope is missing its {mode}-mode contract "[m
+[32m+[m[32m                "fields (stale or mismatched engine binary?)",[m
+[32m+[m[32m                [_issue_like("envelope",[m
+[32m+[m[32m                             "missing required fields: "[m
+[32m+[m[32m                             + ", ".join(_OK_ENVELOPE_FIELDS.get(mode, ())),[m
+[32m+[m[32m                             sorted(envelope.keys()))])[m
+         last_transient = None[m
+         break[m
+     if last_transient is not None:[m
+[1mdiff --git a/bots/experiment_bot.py b/bots/experiment_bot.py[m
+[1mindex dd83b5e..c951106 100644[m
+[1m--- a/bots/experiment_bot.py[m
+[1m+++ b/bots/experiment_bot.py[m
+[36m@@ -17,7 +17,10 @@[m [mreproducible experiment record. Responsibilities and limits:[m
+   (E_JOB_INVALID), empty traces (E_TRACE_INVALID).[m
+ """[m
+ [m
+[32m+[m[32mimport errno[m
+ import json[m
+[32m+[m[32mimport os[m
+[32m+[m[32mimport time[m
+ from datetime import datetime, timezone[m
+ from pathlib import Path[m
+ [m
+[36m@@ -71,12 +74,50 @@[m [mdef save_report(record, directory):[m
+     """Writes the record as `<directory>/<experiment_id>.json` with[m
+     deterministic bytes (sorted keys, 2-space indent, trailing newline).[m
+     Returns the written path. The caller decides the directory (rules.md 4;[m
+[31m-    the production location is `reports/`)."""[m
+[32m+[m[32m    the production location is `reports/`).[m
+[32m+[m
+[32m+[m[32m    The write is an atomic no-clobber creation (`O_CREAT | O_EXCL`, honored[m
+[32m+[m[32m    on POSIX and Windows), so two concurrent saves of DIFFERENT content[m
+[32m+[m[32m    under one experiment_id can never overwrite each other — exactly one[m
+[32m+[m[32m    wins and the loser raises FileExistsError; the original file is never[m
+[32m+[m[32m    modified by a refused save. Saving the identical record is idempotent[m
+[32m+[m[32m    (a short bounded poll tolerates a winner that is still mid-write).[m
+[32m+[m[32m    """[m
+     directory = Path(directory)[m
+     directory.mkdir(parents=True, exist_ok=True)[m
+     path = directory / f"{record['experiment_id']}.json"[m
+[31m-    path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n",[m
+[31m-                    encoding="utf-8")[m
+[32m+[m[32m    payload = json.dumps(record, indent=2, sort_keys=True) + "\n"[m
+[32m+[m[32m    data = payload.encode("utf-8")[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL |[m
+[32m+[m[32m                     getattr(os, "O_BINARY", 0), 0o666)[m
+[32m+[m[32m    except FileExistsError:[m
+[32m+[m[32m        # Lost the creation race, or the file predates this save. Poll[m
+[32m+[m[32m        # briefly so a concurrent identical save stays idempotent (the[m
+[32m+[m[32m        # winner may not have finished writing yet), then fail loudly on a[m
+[32m+[m[32m        # real content conflict — never overwriting the original.[m
+[32m+[m[32m        for _ in range(50):[m
+[32m+[m[32m            if path.read_text(encoding="utf-8") == payload:[m
+[32m+[m[32m                return path[m
+[32m+[m[32m            time.sleep(0.01)[m
+[32m+[m[32m        raise FileExistsError([m
+[32m+[m[32m            errno.EEXIST,[m
+[32m+[m[32m            f"a different report already exists for experiment_id "[m
+[32m+[m[32m            f"{record['experiment_id']!r}; not overwriting it (remove the "[m
+[32m+[m[32m            f"stale file or re-run the experiment)", str(path))[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        with os.fdopen(fd, "wb") as handle:[m
+[32m+[m[32m            handle.write(data)[m
+[32m+[m[32m    except OSError:[m
+[32m+[m[32m        # This file was exclusively created by THIS save, so a failed write[m
+[32m+[m[32m        # must not leave a misleading empty/partial report behind. The[m
+[32m+[m[32m        # primary error is re-raised; only the best-effort cleanup is[m
+[32m+[m[32m        # allowed to fail silently.[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            os.unlink(path)[m
+[32m+[m[32m        except OSError:[m
+[32m+[m[32m            pass[m
+[32m+[m[32m        raise[m
+     return path[m
+ [m
+ [m
+[36m@@ -172,7 +213,12 @@[m [mdef _run_experiment(request, simulate_fn):[m
+                             "miss_penalty": config["miss_penalty"],[m
+                             "unit": "cycles"}[m
+     return {[m
+[31m-        "experiment_id": f"exp-{created:%Y%m%d-%H%M%S}-{mode_word}",[m
+[32m+[m[32m        # Microsecond precision (D-30): two different experiments completing[m
+[32m+[m[32m        # in the same wall-clock second must never share an id and overwrite[m
+[32m+[m[32m        # each other's report files. The schema accepts the historical[m
+[32m+[m[32m        # second-resolution format for records saved before D-30.[m
+[32m+[m[32m        "experiment_id": f"exp-{created:%Y%m%d-%H%M%S}-"[m
+[32m+[m[32m                         f"{created.microsecond:06d}-{mode_word}",[m
+         "mode": mode,[m
+         "created_utc": created.strftime("%Y-%m-%dT%H:%M:%SZ"),[m
+         "engine_version": versions.pop(),[m
+[1mdiff --git a/docs/architecture.md b/docs/architecture.md[m
+[1mindex 1469a1f..0cd3c4f 100644[m
+[1m--- a/docs/architecture.md[m
+[1m+++ b/docs/architecture.md[m
+[36m@@ -366,7 +366,7 @@[m [mBot 1 output is deterministic: identical requests ⇒ identical traces.[m
+ [m
+ ```json[m
+ {[m
+[31m-  "experiment_id": "exp-20261024-193000-policy",[m
+[32m+[m[32m  "experiment_id": "exp-20261024-193000-123456-policy",[m
+   "mode": "policy_comparison",[m
+   "created_utc": "2026-10-24T19:30:00Z",[m
+   "engine_version": "0.1.0",[m
+[36m@@ -394,6 +394,14 @@[m [mBot 1 output is deterministic: identical requests ⇒ identical traces.[m
+   (`E_CONFIG_INVALID` at Bot 2 level), never a misleading table.[m
+ - `summary_text` is generated only from run data (fixed sentence templates,[m
+   numbers interpolated) — deterministic for identical records.[m
+[32m+[m[32m- `experiment_id` is `exp-<UTC date>-<UTC hhmmss>-<microseconds>-<mode>`[m
+[32m+[m[32m  (decision D-30): the microsecond segment makes a same-second collision —[m
+[32m+[m[32m  two different experiments sharing an id and overwriting each other's[m
+[32m+[m[32m  report file — unreachable in practice. Records saved before D-30 use the[m
+[32m+[m[32m  historical second-resolution form `exp-<date>-<hhmmss>-<mode>`; both[m
+[32m+[m[32m  forms match the schema pattern, and `save_report` additionally refuses[m
+[32m+[m[32m  to silently overwrite a destination that already holds different[m
+[32m+[m[32m  content.[m
+ - Records are saved to `reports/<experiment_id>.json`; the UI also offers a[m
+   download button. Every run embeds the engine version; a record is reproducible[m
+   if re-running its trace/configs/seed(s) on the same engine version reproduces[m
+[1mdiff --git a/docs/memory.md b/docs/memory.md[m
+[1mindex 02e6de3..72fb8fe 100644[m
+[1m--- a/docs/memory.md[m
+[1m+++ b/docs/memory.md[m
+[36m@@ -367,6 +367,141 @@[m
+   boundary traces, plus ~60 validation cases) and 111 bot/scene checks —[m
+   no engine or bot defects beyond the four above. pytest 167 → 172 (5[m
+   regression tests). No commit/push performed.[m
+[32m+[m[32m- **D-29 Adversarial reliability pass (2026-10-27, second audit):**[m
+[32m+[m[32m  differential + metamorphic + fault-injection + mutation testing against[m
+[32m+[m[32m  the already-committed D-28 state. One verified engine defect found and[m
+[32m+[m[32m  fixed, plus two boundary hardenings; everything else confirmed clean.[m
+[32m+[m[32m  1. **Engine crash fix (`engine/src/main.cpp`):** a VALID supported[m
+[32m+[m[32m     configuration — capacity 2^20, block 1, direct-mapped (1,048,576[m
+[32m+[m[32m     sets) with a 100,000-access trace — exhausted memory on a[m
+[32m+[m[32m     constrained machine and died with an **uncaught `std::bad_alloc`**:[m
+[32m+[m[32m     empty stdout, `terminate()`, abort exit code 3 — colliding with the[m
+[32m+[m[32m     documented "validation" exit code and producing no contract[m
+[32m+[m[32m     envelope. Root cause: the final-state JSON for a 2^20-line cache[m
+[32m+[m[32m     (≈101 MB of text, several hundred MB of nlohmann structures) plus[m
+[32m+[m[32m     100,000 event objects can exceed available RAM; nothing caught the[m
+[32m+[m[32m     standard-library failure. Fix: the simulate/serialize/emit phase in[m
+[32m+[m[32m     `run_simulate` is wrapped in try/catch — `std::bad_alloc` emits the[m
+[32m+[m[32m     documented `E_INTERNAL` envelope ("the engine ran out of memory[m
+[32m+[m[32m     …") with exit 4; any other `std::exception` emits[m
+[32m+[m[32m     `E_INTERNAL` with `what()`. Contract-conformant failure on any[m
+[32m+[m[32m     machine (bigger-RAM machines may legitimately succeed with ok:true[m
+[32m+[m[32m     — the regression test accepts both branches and asserts the[m
+[32m+[m[32m     envelope contract). The final emit was initially left outside the[m
+[32m+[m[32m     try (the 101 MB `dump()` threw there) — caught in review-by-test.[m
+[32m+[m[32m  2. **Transport hardening (`bots/engine_client.py`):** ok-envelopes are[m
+[32m+[m[32m     now shape-validated per mode (simulate: engine/geometry/events/[m
+[32m+[m[32m     summary/state with types; geometry: engine/geometry; version:[m
+[32m+[m[32m     engine) — a stale or mismatched engine binary emitting a[m
+[32m+[m[32m     "successful" envelope missing its contract fields now fails as[m
+[32m+[m[32m     terminal `E_INTERNAL` at the client boundary instead of flowing[m
+[32m+[m[32m     through as a false success that would KeyError later consumers.[m
+[32m+[m[32m  3. **Scene-payload hardening (`ui/cache_scene.py`):** `build_payload`[m
+[32m+[m[32m     refuses envelopes whose snapshot count disagrees with the event[m
+[32m+[m[32m     count (the JS reads `snapshots[k-1]` by index; a mismatch would[m
+[32m+[m[32m     desynchronize the scene from the real accesses).[m
+[32m+[m[32m  Evidence from the pass: independent test-only Python reference model[m
+[32m+[m[32m  (exact mt19937 replication — seed 12345 first draw 3992670690[m
+[32m+[m[32m  confirmed) agreed with the engine on **496,980 checks over 946 runs /[m
+[32m+[m[32m  39,640 events** (every event field, final state incl. ranks, counters,[m
+[32m+[m[32m  rng draws, every per-access snapshot); metamorphic invariances[m
+[32m+[m[32m  (snapshots/AMAT-off/byte-identical rerun/resident-block[m
+[32m+[m[32m  re-access/prefix-event agreement/final-snapshot==state) all hold;[m
+[32m+[m[32m  adversarial field limits (2^62/2^64-1 capacity values, seed 2^32-1[m
+[32m+[m[32m  accepted & 2^32 rejected, float-where-int rejected, nulls rejected,[m
+[32m+[m[32m  inf hit_time rejected at the JSON boundary as E_JOB_INVALID, u64[m
+[32m+[m[32m  address extremes) behave per contract; 100k-access timing < 1 s;[m
+[32m+[m[32m  CLI/exit-code/`--out` contract verified. **Mutation testing (scratch[m
+[32m+[m[32m  copies, never the real build):** LRU→MRU killed by the engine suite[m
+[32m+[m[32m  (18 failures), missing eviction-counter increment killed (26[m
+[32m+[m[32m  failures), digest canonical-prefix change survived `engine_tests`[m
+[32m+[m[32m  (0 failures) but is killed by pytest (3 failures — the digest is[m
+[32m+[m[32m  pinned against independent hashlib values only at the Python layer).[m
+[32m+[m[32m  ruff (pyflakes/bugbear subset): production code clean; 2 nits in new[m
+[32m+[m[32m  test code fixed; B904 raise-from chains in `engine_client` are[m
+[32m+[m[32m  pre-existing intentional style (left unchanged). Streamlit 1.66[m
+[32m+[m[32m  auto-fixes the mixed str/int "evicted block" dataframe column[m
+[32m+[m[32m  ("Applying automatic fixes", logged only — the table renders; CSV[m
+[32m+[m[32m  unaffected) — accepted behavior, documented here rather than changed.[m
+[32m+[m[32m  Known accepted limitation: `experiment_id` has second resolution, so[m
+[32m+[m[32m  two DIFFERENT experiments completing within the same wall-clock[m
+[32m+[m[32m  second would collide on the report filename (same-second reruns of[m
+[32m+[m[32m  identical input are byte-identical and harmless); observed reachability[m
+[32m+[m[32m  requires sub-second back-to-back runs — documented, not redesigned.[m
+[32m+[m[32m  (RESOLVED by D-30 the same day: microsecond id segment + schema[m
+[32m+[m[32m  pattern widened + non-overwriting `save_report`; the historical[m
+[32m+[m[32m  explanation above is preserved for context.)[m
+[32m+[m[32m  pytest 172 → **194** (22 new: 9 AppTest UI-sequence tests incl. the[m
+[32m+[m[32m  failure→retry→recovery path with engine-call counting, 5[m
+[32m+[m[32m  ok-envelope-shape + empty-stdout transient, 4 save_report filesystem[m
+[32m+[m[32m  failures, 1 snapshot-alignment, 1 engine extreme-state regression,[m
+[32m+[m[32m  2 Bot 1 exact-sequence). Engine suite 729 checks / 0 failures.[m
+[32m+[m[32m  Sanitizer note: MinGW.org GCC 6.3 does not support ASan/UBSan builds —[m
+[32m+[m[32m  overflow/shift safety was reviewed by reading the arithmetic (all[m
+[32m+[m[32m  address math is uint64 with explicit width==64 guard) and by the[m
+[32m+[m[32m  differential/limit testing above, not by sanitizer run. No commit or[m
+[32m+[m[32m  push performed; the unrelated untracked `imulator"` file untouched.[m
+[32m+[m[32m- **D-30 Experiment-ID collision fix (2026-10-27):** resolution of the[m
+[32m+[m[32m  D-29 known limitation. Reproduced deterministically with a controlled[m
+[32m+[m[32m  clock (`bots.experiment_bot.datetime` patched to a frozen timestamp):[m
+[32m+[m[32m  two different experiments created in the same wall-clock second[m
+[32m+[m[32m  received the identical `experiment_id` (`exp-YYYYMMDD-HHMMSS-mode`),[m
+[32m+[m[32m  resolved to the same `reports/<id>.json` path, and the second[m
+[32m+[m[32m  `save_report` silently overwrote the first report — losing it while[m
+[32m+[m[32m  the UI still displayed the first record. Why the fix was made: the id[m
+[32m+[m[32m  is the sole report filename key, the incident was reachable in[m
+[32m+[m[32m  principle from back-to-back runs, and the loss was silent. Fix[m
+[32m+[m[32m  (smallest change preserving contracts):[m
+[32m+[m[32m  (1) `experiment_id` gains a 6-digit microsecond segment[m
+[32m+[m[32m  (`exp-YYYYMMDD-HHMMSS-ffffff-mode`) — wall-clock based like the[m
+[32m+[m[32m  existing `created_utc` (no in-memory counter, no randomness;[m
+[32m+[m[32m  experiments are created sequentially in one process and each involves[m
+[32m+[m[32m  multiple engine subprocesses, so same-microsecond completion is[m
+[32m+[m[32m  unreachable in practice);[m
+[32m+[m[32m  (2) `schemas/experiment.schema.json` pattern widened to[m
+[32m+[m[32m  `^exp-[0-9]{8}-[0-9]{6}(-[0-9]{6})?-[a-z_]+$` — the historical[m
+[32m+[m[32m  second-resolution format (e.g. `docs/demo-record.json` and every[m
+[32m+[m[32m  pre-D-30 report) remains valid, so no consumer changes;[m
+[32m+[m[32m  (3) `save_report` never silently overwrites a destination holding[m
+[32m+[m[32m  DIFFERENT content — it raises `FileExistsError` (an OSError, so the[m
+[32m+[m[32m  workflow's step-4 handler already treats it as a failed step with[m
+[32m+[m[32m  steps 1-3 preserved); re-saving the identical record stays allowed[m
+[32m+[m[32m  (idempotent, byte-identical);[m
+[32m+[m[32m  (4) the Experiments tab "Save report" button, previously unguarded,[m
+[32m+[m[32m  now surfaces save failures as an error card (design.md 7) instead of[m
+[32m+[m[32m  a traceback. `architecture.md` §6.9 documents the new format and the[m
+[32m+[m[32m  no-overwrite rule; the schema description carries the rationale.[m
+[32m+[m[32m  Report determinism is unaffected: identical inputs under identical[m
+[32m+[m[32m  conditions still produce identical records, and `summary_text`[m
+[32m+[m[32m  determinism is untouched. Regression tests (5, in[m
+[32m+[m[32m  `TestReportIdentity`): distinct ids + separate reports + first report[m
+[32m+[m[32m  intact under a controlled same-second clock; id↔filename↔serialized[m
+[32m+[m[32m  metadata agreement; frozen-clock identical-input reproducibility with[m
+[32m+[m[32m  idempotent re-save; conflicting-destination refusal leaving the[m
+[32m+[m[32m  existing file byte-identical; schema accepts microsecond + legacy ids[m
+[32m+[m[32m  and rejects malformed variants. pytest 194 → **199**.[m
+[32m+[m[32m  **Atomicity hardening (same day, concurrency review):** the original[m
+[32m+[m[32m  D-30 guard was a check-then-write sequence (`path.exists()`/`read_text`[m
+[32m+[m[32m  then unconditional `write_text`) — a TOCTOU race in which two[m
+[32m+[m[32m  concurrent saves of different content under one id could both pass the[m
+[32m+[m[32m  check and the last writer silently won (Streamlit runs sessions as[m
+[32m+[m[32m  threads, so concurrent saves are reachable). `save_report` now creates[m
+[32m+[m[32m  the destination atomically with `os.open(O_WRONLY|O_CREAT|O_EXCL)`[m
+[32m+[m[32m  (honored on POSIX and Windows) and writes through that exclusive[m
+[32m+[m[32m  handle: exactly one concurrent save wins, losers get `FileExistsError`,[m
+[32m+[m[32m  and a refused save never modifies the original. A bounded 0.5 s poll in[m
+[32m+[m[32m  the `EEXIST` path keeps concurrent identical saves idempotent (the[m
+[32m+[m[32m  winner may still be mid-write), and a failed write unlinks the file it[m
+[32m+[m[32m  exclusively created so no misleading partial report survives. Bytes are[m
+[32m+[m[32m  now LF on all platforms (written via `O_BINARY` binary handle;[m
+[32m+[m[32m  `read_text` normalization keeps legacy CRLF pre-D-30 reports[m
+[32m+[m[32m  idempotent). Regression tests: `TestSaveReportAtomicity` (concurrent[m
+[32m+[m[32m  identical saves all succeed idempotently with intact bytes; six[m
+[32m+[m[32m  concurrent conflicting saves all refused with the original[m
+[32m+[m[32m  byte-identical; a true first-save race yields exactly one winner and[m
+[32m+[m[32m  one complete record — 10 repeat runs, no flakiness), and the two[m
+[32m+[m[32m  fault-injection tests now inject at the new write point (`os.fdopen`).[m
+[32m+[m[32m  pytest 199 → **202**.[m
+ - **D-24 Phase-9 decisions (2026-10-25):**[m
+   (a) Launch convention: the app is started from the `ui/` directory[m
+   (`cd ui && python -m streamlit run app.py`) so `ui/.streamlit/config.toml`[m
+[36m@@ -1011,6 +1146,36 @@[m
+     results preserved; Experiments policy comparison + Save report.[m
+     Engine C++ untouched this round.[m
+ [m
+[32m+[m[32m  - 2026-10-27 (adversarial reliability pass, D-29): baseline re-verified[m
+[32m+[m[32m    first (**172 passed**; engine **729 checks, 0 failures**). Then the[m
+[32m+[m[32m    differential/metamorphic/adversarial campaign (D-29 for details).[m
+[32m+[m[32m    Post-fix regression: `python -m pytest tests -q` — **194 passed, 4[m
+[32m+[m[32m    warnings** (22 new tests; `tests/test_app_sequences.py` adds the[m
+[32m+[m[32m    project's first AppTest-level UI coverage); `mingw32-make -C engine[m
+[32m+[m[32m    test` — **729 checks, 0 failures**; `mingw32-make -C engine all` —[m
+[32m+[m[32m    rebuilt clean (engine fix), zero warnings. Browser re-verification[m
+[32m+[m[32m    after all changes: the D-28 incident workflow (fully associative[m
+[32m+[m[32m    16/16, width 13, FIFO, blocks 8 × passes 11, seed 5457) completes[m
+[32m+[m[32m    all four steps DONE with the report saved; a normal 32-access[m
+[32m+[m[32m    simulation (24 hits / 8 misses / 7 evictions / AMAT 6.00 — hand[m
+[32m+[m[32m    checked); 3D playback stepped to 2/32 with consistent counters;[m
+[32m+[m[32m    Light→Dark→Light with metrics intact.[m
+[32m+[m
+[32m+[m[32m  - 2026-10-27 (report-persistence closure, D-30): collision reproduced[m
+[32m+[m[32m    with a controlled clock, then fixed and regression-tested. Focused[m
+[32m+[m[32m    run of all seven prior-fix test groups plus the new[m
+[32m+[m[32m    `TestReportIdentity` — **34 passed**. Final: `python -m pytest[m
+[32m+[m[32m    tests -q` — **199 passed, 4 warnings**; `mingw32-make -C engine[m
+[32m+[m[32m    test` — **729 checks, 0 failures**; `mingw32-make -C engine all` —[m
+[32m+[m[32m    up to date (no engine changes this round). The workflow's[m
+[32m+[m[32m    report-save path (now writing microsecond-precision ids) is[m
+[32m+[m[32m    exercised end-to-end against the real engine and real `reports/`[m
+[32m+[m[32m    directory by the AppTest workflow-sequence tests (both green), and[m
+[32m+[m[32m    the Experiments tab's real-engine schema validation covers the new[m
+[32m+[m[32m    id format (`test_record_validates_against_schema`). The audit-2[m
+[32m+[m[32m    browser session above predates D-30; no UI-facing rendering changed[m
+[32m+[m[32m    in this round (only the save-button guard and id text).[m
+[32m+[m
+ No test result may be claimed without being recorded in this section.[m
+ [m
+ ## 9. Known bugs and unresolved issues[m
+[1mdiff --git a/engine/src/main.cpp b/engine/src/main.cpp[m
+[1mindex c80dc9c..f33a2bb 100644[m
+[1m--- a/engine/src/main.cpp[m
+[1m+++ b/engine/src/main.cpp[m
+[36m@@ -338,32 +338,50 @@[m [mint run_simulate(const Options& opts) {[m
+     }[m
+   }[m
+ [m
+[31m-  // Simulation.[m
+[31m-  engine::SimulateResult result;[m
+[31m-  if (!engine::simulate(config, geometry, tv.trace.addresses,[m
+[31m-                        include_state_after_each, &result)) {[m
+[31m-    emit(error_envelope("E_INTERNAL", "internal invariant violation"),[m
+[32m+[m[32m  // Simulation. Large supported configurations (e.g. a 2^20-line cache with[m
+[32m+[m[32m  // a 100,000-access trace) can legitimately exhaust memory on constrained[m
+[32m+[m[32m  // machines; a standard-library failure must still produce a contract[m
+[32m+[m[32m  // envelope (E_INTERNAL, exit 4) — never an uncaught std::bad_alloc crash[m
+[32m+[m[32m  // with an empty stdout and an undocumented exit code.[m
+[32m+[m[32m  json envelope = success_envelope();[m
+[32m+[m[32m  try {[m
+[32m+[m[32m    engine::SimulateResult result;[m
+[32m+[m[32m    if (!engine::simulate(config, geometry, tv.trace.addresses,[m
+[32m+[m[32m                          include_state_after_each, &result)) {[m
+[32m+[m[32m      emit(error_envelope("E_INTERNAL", "internal invariant violation"),[m
+[32m+[m[32m           opts.out_path);[m
+[32m+[m[32m      return kExitInternal;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    envelope["echo"] = *cfg_it;[m
+[32m+[m[32m    envelope["geometry"] = engine::geometry_to_json(geometry, config);[m
+[32m+[m[32m    json events = json::array();[m
+[32m+[m[32m    for (const auto& e : result.events) {[m
+[32m+[m[32m      events.push_back(engine::event_to_json(e, config));[m
+[32m+[m[32m    }[m
+[32m+[m[32m    envelope["events"] = events;[m
+[32m+[m[32m    envelope["summary"] = engine::build_summary(config, result.counts,[m
+[32m+[m[32m                                                result.rng_draws,[m
+[32m+[m[32m                                                tv.trace.addresses);[m
+[32m+[m[32m    envelope["state"] = engine::state_to_json(result.final_state,[m
+[32m+[m[32m                                              result.snapshots,[m
+[32m+[m[32m                                              engine::policy_from_config(config),[m
+[32m+[m[32m                                              result.snapshots_requested);[m
+[32m+[m[32m    emit(envelope, opts.out_path);[m
+[32m+[m[32m    return kExitOk;[m
+[32m+[m[32m  } catch (const std::bad_alloc&) {[m
+[32m+[m[32m    emit(error_envelope("E_INTERNAL",[m
+[32m+[m[32m                        "the engine ran out of memory producing the result "[m
+[32m+[m[32m                        "for this configuration and trace; use a smaller "[m
+[32m+[m[32m                        "cache or trace", json::array()),[m
+[32m+[m[32m         opts.out_path);[m
+[32m+[m[32m    return kExitInternal;[m
+[32m+[m[32m  } catch (const std::exception& err) {[m
+[32m+[m[32m    emit(error_envelope("E_INTERNAL",[m
+[32m+[m[32m                        std::string("internal error: ") + err.what()),[m
+          opts.out_path);[m
+     return kExitInternal;[m
+   }[m
+[31m-[m
+[31m-  json envelope = success_envelope();[m
+[31m-  envelope["echo"] = *cfg_it;[m
+[31m-  envelope["geometry"] = engine::geometry_to_json(geometry, config);[m
+[31m-  json events = json::array();[m
+[31m-  for (const auto& e : result.events) {[m
+[31m-    events.push_back(engine::event_to_json(e, config));[m
+[31m-  }[m
+[31m-  envelope["events"] = events;[m
+[31m-  envelope["summary"] = engine::build_summary(config, result.counts,[m
+[31m-                                              result.rng_draws,[m
+[31m-                                              tv.trace.addresses);[m
+[31m-  envelope["state"] = engine::state_to_json(result.final_state,[m
+[31m-                                            result.snapshots,[m
+[31m-                                            engine::policy_from_config(config),[m
+[31m-                                            result.snapshots_requested);[m
+[31m-  emit(envelope, opts.out_path);[m
+[31m-  return kExitOk;[m
+ }[m
+ [m
+ }  // namespace[m
+[1mdiff --git a/schemas/experiment.schema.json b/schemas/experiment.schema.json[m
+[1mindex 3e54982..8f9e6ab 100644[m
+[1m--- a/schemas/experiment.schema.json[m
+[1m+++ b/schemas/experiment.schema.json[m
+[36m@@ -2,12 +2,12 @@[m
+   "$schema": "http://json-schema.org/draft-07/schema#",[m
+   "$id": "experiment.schema.json",[m
+   "title": "Bot 2 experiment record",[m
+[31m-  "description": "Reproducible record of a Bot 2 experiment (architecture.md 6.9): full trace, fixed parameters, every run's config/seed/summary, engine version. summary_text is generated from the run data only (deterministic).",[m
+[32m+[m[32m  "description": "Reproducible record of a Bot 2 experiment (architecture.md 6.9): full trace, fixed parameters, every run's config/seed/summary, engine version. summary_text is generated from the run data only (deterministic). experiment_id carries microsecond precision (D-30) so same-second experiments cannot collide; the historical second-resolution format remains valid for records saved before D-30.",[m
+   "type": "object",[m
+   "additionalProperties": false,[m
+   "required": ["experiment_id", "mode", "created_utc", "engine_version", "trace", "fixed", "runs", "summary_text"],[m
+   "properties": {[m
+[31m-    "experiment_id": { "type": "string", "pattern": "^exp-[0-9]{8}-[0-9]{6}-[a-z_]+$" },[m
+[32m+[m[32m    "experiment_id": { "type": "string", "pattern": "^exp-[0-9]{8}-[0-9]{6}(-[0-9]{6})?-[a-z_]+$" },[m
+     "mode": { "enum": ["policy_comparison", "organization_comparison"] },[m
+     "created_utc": { "type": "string", "minLength": 1 },[m
+     "engine_version": { "type": "string", "minLength": 1 },[m
+[1mdiff --git a/tests/test_cache_scene.py b/tests/test_cache_scene.py[m
+[1mindex 45e366a..c2f330d 100644[m
+[1m--- a/tests/test_cache_scene.py[m
+[1m+++ b/tests/test_cache_scene.py[m
+[36m@@ -147,6 +147,17 @@[m [mclass TestPayloadBuilder:[m
+         assert result["ok"] is False[m
+         assert "snapshots were not captured" in result["reason"][m
+ [m
+[32m+[m[32m    def test_snapshot_event_count_disagreement_refused(self):[m
+[32m+[m[32m        # Audit-2 adversarial pass: the engine emits one snapshot per access[m
+[32m+[m[32m        # (architecture.md 6.7). A mismatched envelope must be refused at[m
+[32m+[m[32m        # the builder boundary — replaying it would desynchronize the scene[m
+[32m+[m[32m        # from the real accesses (the JS reads snapshots[k-1] by index).[m
+[32m+[m[32m        envelope = json.loads(json.dumps(self.ENVELOPE))[m
+[32m+[m[32m        envelope["state"]["snapshots"] = envelope["state"]["snapshots"][:-1][m
+[32m+[m[32m        result = cache_scene.build_payload(envelope)[m
+[32m+[m[32m        assert result["ok"] is False[m
+[32m+[m[32m        assert "do not match" in result["reason"][m
+[32m+[m
+     def test_empty_trace_is_supported(self):[m
+         envelope = json.loads(json.dumps(self.ENVELOPE))[m
+         envelope["events"] = [][m
+[1mdiff --git a/tests/test_experiment_bot.py b/tests/test_experiment_bot.py[m
+[1mindex 91351fa..91fc04a 100644[m
+[1m--- a/tests/test_experiment_bot.py[m
+[1m+++ b/tests/test_experiment_bot.py[m
+[36m@@ -8,10 +8,14 @@[m [mpublished E3/E5 outcomes (D-15) and the E2 organization comparison.[m
+ [m
+ import hashlib[m
+ import json[m
+[32m+[m[32mimport os[m
+[32m+[m[32mimport threading[m
+[32m+[m[32mfrom datetime import datetime, timezone[m
+ [m
+ import pytest[m
+ [m
+ import test_smoke as ts[m
+[32m+[m[32mimport bots.experiment_bot as eb[m
+ from bots import engine_client[m
+ from bots.experiment_bot import run_experiment, save_report[m
+ from bots.trace_bot import generate as trace_generate[m
+[36m@@ -401,6 +405,310 @@[m [mclass TestSaveReport:[m
+         path = save_report(response["record"], target)[m
+         assert path.exists() and path.parent == target[m
+ [m
+[32m+[m[32m    def test_directory_path_occupied_by_a_file_raises_oserror(self, tmp_path):[m
+[32m+[m[32m        # Audit-2 filesystem pass: `reports` exists as a FILE — mkdir must[m
+[32m+[m[32m        # raise an OSError (FileExistsError), which the workflow's step 4[m
+[32m+[m[32m        # catches as a failed step; it must never be swallowed here.[m
+[32m+[m[32m        occupied = tmp_path / "reports"[m
+[32m+[m[32m        occupied.write_text("not a directory", encoding="utf-8")[m
+[32m+[m[32m        response = run_experiment(policy_request(),[m
+[32m+[m[32m                                  canned_policy_simulate({"LRU": 1,[m
+[32m+[m[32m                                                          "FIFO": 2,[m
+[32m+[m[32m                                                          "RANDOM": 2}))[m
+[32m+[m[32m        import pytest[m
+[32m+[m[32m        with pytest.raises(OSError):[m
+[32m+[m[32m            save_report(response["record"], occupied)[m
+[32m+[m
+[32m+[m[32m    def test_unwritable_destination_raises_oserror(self, tmp_path,[m
+[32m+[m[32m                                                   monkeypatch):[m
+[32m+[m[32m        # Controlled fault injection at the exclusive-creation write: the[m
+[32m+[m[32m        # write fails — save_report must propagate the OSError (no[m
+[32m+[m[32m        # partial-file success status).[m
+[32m+[m[32m        response = run_experiment(policy_request(),[m
+[32m+[m[32m                                  canned_policy_simulate({"LRU": 1,[m
+[32m+[m[32m                                                          "FIFO": 2,[m
+[32m+[m[32m                                                          "RANDOM": 2}))[m
+[32m+[m
+[32m+[m[32m        class FailingHandle:[m
+[32m+[m[32m            def __init__(self, fd):[m
+[32m+[m[32m                self._fd = fd[m
+[32m+[m
+[32m+[m[32m            def __enter__(self):[m
+[32m+[m[32m                return self[m
+[32m+[m
+[32m+[m[32m            def __exit__(self, *exc_info):[m
+[32m+[m[32m                os.close(self._fd)[m
+[32m+[m[32m                return False[m
+[32m+[m
+[32m+[m[32m            def write(self, data):[m
+[32m+[m[32m                raise PermissionError(13, "permission denied")[m
+[32m+[m
+[32m+[m[32m        monkeypatch.setattr("os.fdopen",[m
+[32m+[m[32m                            lambda fd, mode: FailingHandle(fd))[m
+[32m+[m[32m        import pytest[m
+[32m+[m[32m        with pytest.raises(OSError):[m
+[32m+[m[32m            save_report(response["record"], tmp_path)[m
+[32m+[m
+[32m+[m[32m    def test_failed_write_leaves_no_misleading_file(self, tmp_path,[m
+[32m+[m[32m                                                    monkeypatch):[m
+[32m+[m[32m        response = run_experiment(policy_request(),[m
+[32m+[m[32m                                  canned_policy_simulate({"LRU": 1,[m
+[32m+[m[32m                                                          "FIFO": 2,[m
+[32m+[m[32m                                                          "RANDOM": 2}))[m
+[32m+[m[32m        calls = [][m
+[32m+[m
+[32m+[m[32m        class FailingHandle:[m
+[32m+[m[32m            def __init__(self, fd):[m
+[32m+[m[32m                self._fd = fd[m
+[32m+[m
+[32m+[m[32m            def __enter__(self):[m
+[32m+[m[32m                return self[m
+[32m+[m
+[32m+[m[32m            def __exit__(self, *exc_info):[m
+[32m+[m[32m                os.close(self._fd)[m
+[32m+[m[32m                return False[m
+[32m+[m
+[32m+[m[32m            def write(self, data):[m
+[32m+[m[32m                calls.append(self._fd)[m
+[32m+[m[32m                raise OSError(28, "no space left on device")[m
+[32m+[m
+[32m+[m[32m        monkeypatch.setattr("os.fdopen",[m
+[32m+[m[32m                            lambda fd, mode: FailingHandle(fd))[m
+[32m+[m[32m        import pytest[m
+[32m+[m[32m        with pytest.raises(OSError):[m
+[32m+[m[32m            save_report(response["record"], tmp_path)[m
+[32m+[m[32m        assert len(calls) == 1  # one attempt, no silent retry/partial state[m
+[32m+[m[32m        assert list(tmp_path.iterdir()) == []  # cleanup removed the partial[m
+[32m+[m
+[32m+[m
+[32m+[m[32m# --- Report identity and collision safety (D-30) ------------------------------[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass _ControlledClock:[m
+[32m+[m[32m    """Returns the queued stamps in order (repeats the last one); a[m
+[32m+[m[32m    controlled clock for deterministic same-second reproduction."""[m
+[32m+[m
+[32m+[m[32m    def __init__(self, stamps):[m
+[32m+[m[32m        self._stamps = stamps[m
+[32m+[m[32m        self._calls = 0[m
+[32m+[m
+[32m+[m[32m    def now(self, tz=None):[m
+[32m+[m[32m        value = self._stamps[min(self._calls, len(self._stamps) - 1)][m
+[32m+[m[32m        self._calls += 1[m
+[32m+[m[32m        return value[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _stamp(second_us):[m
+[32m+[m[32m    return datetime(2026, 10, 27, 12, 0, 0, second_us, tzinfo=timezone.utc)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass TestReportIdentity:[m
+[32m+[m[32m    def test_same_second_experiments_get_distinct_ids_and_reports([m
+[32m+[m[32m            self, tmp_path, monkeypatch):[m
+[32m+[m[32m        # D-30 regression: two different experiments completing in the same[m
+[32m+[m[32m        # wall-clock second used to share one experiment_id and the second[m
+[32m+[m[32m        # save silently overwrote the first report.[m
+[32m+[m[32m        monkeypatch.setattr([m
+[32m+[m[32m            eb, "datetime",[m
+[32m+[m[32m            _ControlledClock([_stamp(100000), _stamp(200000)]))[m
+[32m+[m[32m        rec_a = run_experiment([m
+[32m+[m[32m            policy_request(trace={"name": "run-A",[m
+[32m+[m[32m                                  "addresses": [0, 4, 0, 8, 4]}),[m
+[32m+[m[32m            canned_policy_simulate({"LRU": 1, "FIFO": 1, "RANDOM": 1}))[m
+[32m+[m[32m        rec_b = run_experiment([m
+[32m+[m[32m            policy_request(trace={"name": "run-B",[m
+[32m+[m[32m                                  "addresses": [0, 4, 8, 12, 16]}),[m
+[32m+[m[32m            canned_policy_simulate({"LRU": 2, "FIFO": 1, "RANDOM": 1}))[m
+[32m+[m[32m        id_a, id_b = (r["record"]["experiment_id"] for r in (rec_a, rec_b))[m
+[32m+[m[32m        assert id_a != id_b[m
+[32m+[m[32m        # same second, distinct microsecond segments[m
+[32m+[m[32m        assert id_a == "exp-20261027-120000-100000-policy"[m
+[32m+[m[32m        assert id_b == "exp-20261027-120000-200000-policy"[m
+[32m+[m[32m        path_a = save_report(rec_a["record"], tmp_path)[m
+[32m+[m[32m        path_b = save_report(rec_b["record"], tmp_path)[m
+[32m+[m[32m        assert path_a != path_b[m
+[32m+[m[32m        assert sorted(p.name for p in tmp_path.iterdir()) == sorted([m
+[32m+[m[32m            [path_a.name, path_b.name])[m
+[32m+[m[32m        # saving the second experiment did not alter the first report[m
+[32m+[m[32m        first = json.loads(path_a.read_text(encoding="utf-8"))[m
+[32m+[m[32m        assert first == rec_a["record"][m
+[32m+[m[32m        assert first["trace"]["name"] == "run-A"[m
+[32m+[m
+[32m+[m[32m    def test_id_filename_and_metadata_agree(self, tmp_path, monkeypatch):[m
+[32m+[m[32m        monkeypatch.setattr(eb, "datetime", _ControlledClock([_stamp(123456)]))[m
+[32m+[m[32m        record = run_experiment(policy_request(),[m
+[32m+[m[32m                                canned_policy_simulate({"LRU": 1, "FIFO": 2,[m
+[32m+[m[32m                                                        "RANDOM": 2}))[m
+[32m+[m[32m        record = record["record"][m
+[32m+[m[32m        path = save_report(record, tmp_path)[m
+[32m+[m[32m        assert path.name == f"{record['experiment_id']}.json"[m
+[32m+[m[32m        reloaded = json.loads(path.read_text(encoding="utf-8"))[m
+[32m+[m[32m        assert reloaded["experiment_id"] == record["experiment_id"][m
+[32m+[m[32m        assert reloaded["created_utc"] == "2026-10-27T12:00:00Z"[m
+[32m+[m[32m        # the id's second-resolution part encodes the created_utc second[m
+[32m+[m[32m        assert record["experiment_id"].startswith("exp-20261027-120000-")[m
+[32m+[m
+[32m+[m[32m    def test_identical_inputs_stay_reproducible(self, tmp_path,[m
+[32m+[m[32m                                                monkeypatch):[m
+[32m+[m[32m        # Documented determinism: identical inputs under identical[m
+[32m+[m[32m        # conditions produce identical records, and re-saving the same[m
+[32m+[m[32m        # record is an idempotent byte-identical write.[m
+[32m+[m[32m        monkeypatch.setattr(eb, "datetime",[m
+[32m+[m[32m                            _ControlledClock([_stamp(100000)]))[m
+[32m+[m[32m        first = run_experiment(policy_request(),[m
+[32m+[m[32m                               canned_policy_simulate({"LRU": 1, "FIFO": 2,[m
+[32m+[m[32m                                                       "RANDOM": 2}))["record"][m
+[32m+[m[32m        second = run_experiment(policy_request(),[m
+[32m+[m[32m                                canned_policy_simulate({"LRU": 1, "FIFO": 2,[m
+[32m+[m[32m                                                        "RANDOM": 2}))["record"][m
+[32m+[m[32m        assert first == second[m
+[32m+[m[32m        path1 = save_report(first, tmp_path)[m
+[32m+[m[32m        bytes1 = path1.read_bytes()[m
+[32m+[m[32m        path2 = save_report(second, tmp_path)  # same content: no raise[m
+[32m+[m[32m        assert path2 == path1 and path2.read_bytes() == bytes1[m
+[32m+[m
+[32m+[m[32m    def test_conflicting_destination_never_silently_overwritten([m
+[32m+[m[32m            self, tmp_path):[m
+[32m+[m[32m        # A generated-ID collision with DIFFERENT content must fail loudly[m
+[32m+[m[32m        # (FileExistsError is an OSError: the workflow's step 4 already[m
+[32m+[m[32m        # handles it) and leave the existing report byte-identical.[m
+[32m+[m[32m        rec_a = run_experiment([m
+[32m+[m[32m            policy_request(trace={"name": "run-A",[m
+[32m+[m[32m                                  "addresses": [0, 4, 0, 8, 4]}),[m
+[32m+[m[32m            canned_policy_simulate({"LRU": 1, "FIFO": 1, "RANDOM": 1}))[m
+[32m+[m[32m        rec_b = run_experiment([m
+[32m+[m[32m            policy_request(trace={"name": "run-B",[m
+[32m+[m[32m                                  "addresses": [0, 4, 8, 12, 16]}),[m
+[32m+[m[32m            canned_policy_simulate({"LRU": 2, "FIFO": 1, "RANDOM": 1}))[m
+[32m+[m[32m        forced = dict(rec_b["record"],[m
+[32m+[m[32m                      experiment_id=rec_a["record"]["experiment_id"])[m
+[32m+[m[32m        path = save_report(rec_a["record"], tmp_path)[m
+[32m+[m[32m        original = path.read_bytes()[m
+[32m+[m[32m        with pytest.raises(FileExistsError):[m
+[32m+[m[32m            save_report(forced, tmp_path)[m
+[32m+[m[32m        assert path.read_bytes() == original[m
+[32m+[m[32m        assert json.loads(path.read_text(encoding="utf-8"))["trace"]["name"] \[m
+[32m+[m[32m            == "run-A"[m
+[32m+[m[32m        # idempotent re-save of the same record remains allowed[m
+[32m+[m[32m        save_report(rec_a["record"], tmp_path)[m
+[32m+[m
+[32m+[m[32m    def test_schema_accepts_microsecond_and_legacy_ids(self):[m
+[32m+[m[32m        from jsonschema import Draft7Validator[m
+[32m+[m[32m        schema = json.loads((ts.ROOT / "schemas" / "experiment.schema.json")[m
+[32m+[m[32m                            .read_text(encoding="utf-8"))[m
+[32m+[m[32m        validator = Draft7Validator([m
+[32m+[m[32m            schema["properties"]["experiment_id"])[m
+[32m+[m[32m        for good in ("exp-20261027-120000-100000-policy",[m
+[32m+[m[32m                     "exp-20261024-193000-policy",  # pre-D-30 record[m
+[32m+[m[32m                     "exp-20261024-201725-organization_comparison"):[m
+[32m+[m[32m            assert validator.is_valid(good), good[m
+[32m+[m[32m        for bad in ("exp-20261027-1200-100000-policy",[m
+[32m+[m[32m                    "exp-20261027-120000-100000-policy-extra",[m
+[32m+[m[32m                    "EXP-20261027-120000-100000-POLICY",[m
+[32m+[m[32m                    "exp-20261027-120000-policy-x9"):[m
+[32m+[m[32m            assert not validator.is_valid(bad), bad[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass TestSaveReportAtomicity:[m
+[32m+[m[32m    """Concurrent saves target the same path only under an id collision[m
+[32m+[m[32m    (D-30 ids make that practically unreachable, and Streamlit sessions[m
+[32m+[m[32m    are threads in one process — still, the no-overwrite guarantee must[m
+[32m+[m[32m    not depend on timing). The guard is an atomic O_CREAT|O_EXCL create."""[m
+[32m+[m
+[32m+[m[32m    @staticmethod[m
+[32m+[m[32m    def _two_records():[m
+[32m+[m[32m        rec_a = run_experiment([m
+[32m+[m[32m            policy_request(trace={"name": "run-A",[m
+[32m+[m[32m                                  "addresses": [0, 4, 0, 8, 4]}),[m
+[32m+[m[32m            canned_policy_simulate({"LRU": 1, "FIFO": 1, "RANDOM": 1}))[m
+[32m+[m[32m        rec_b = run_experiment([m
+[32m+[m[32m            policy_request(trace={"name": "run-B",[m
+[32m+[m[32m                                  "addresses": [0, 4, 8, 12, 16]}),[m
+[32m+[m[32m            canned_policy_simulate({"LRU": 2, "FIFO": 1, "RANDOM": 1}))[m
+[32m+[m[32m        return rec_a["record"], rec_b["record"][m
+[32m+[m
+[32m+[m[32m    def test_concurrent_identical_saves_all_succeed_idempotently([m
+[32m+[m[32m            self, tmp_path):[m
+[32m+[m[32m        record = run_experiment(policy_request(),[m
+[32m+[m[32m                                canned_policy_simulate({"LRU": 1, "FIFO": 2,[m
+[32m+[m[32m                                                        "RANDOM": 2}))[m
+[32m+[m[32m        record = record["record"][m
+[32m+[m[32m        expected = (json.dumps(record, indent=2, sort_keys=True) +[m
+[32m+[m[32m                    "\n").encode("utf-8")[m
+[32m+[m[32m        barrier = threading.Barrier(8)[m
+[32m+[m[32m        results, errors = [], [][m
+[32m+[m
+[32m+[m[32m        def saver():[m
+[32m+[m[32m            barrier.wait()[m
+[32m+[m[32m            try:[m
+[32m+[m[32m                results.append(save_report(record, tmp_path))[m
+[32m+[m[32m            except Exception as err:  # noqa: BLE001 — collected, not hidden[m
+[32m+[m[32m                errors.append(err)[m
+[32m+[m
+[32m+[m[32m        threads = [threading.Thread(target=saver) for _ in range(8)][m
+[32m+[m[32m        for thread in threads:[m
+[32m+[m[32m            thread.start()[m
+[32m+[m[32m        for thread in threads:[m
+[32m+[m[32m            thread.join()[m
+[32m+[m[32m        assert not errors, errors[m
+[32m+[m[32m        assert len(results) == 8[m
+[32m+[m[32m        assert all(path == results[0] for path in results)[m
+[32m+[m[32m        assert results[0].read_bytes() == expected  # intact, never torn[m
+[32m+[m
+[32m+[m[32m    def test_concurrent_conflicting_saves_cannot_overwrite(self, tmp_path):[m
+[32m+[m[32m        rec_a, rec_b = self._two_records()[m
+[32m+[m[32m        forced = dict(rec_b, experiment_id=rec_a["experiment_id"])[m
+[32m+[m[32m        path = save_report(rec_a, tmp_path)[m
+[32m+[m[32m        original = path.read_bytes()[m
+[32m+[m[32m        barrier = threading.Barrier(6)[m
+[32m+[m[32m        refusals = [][m
+[32m+[m
+[32m+[m[32m        def saver():[m
+[32m+[m[32m            barrier.wait()[m
+[32m+[m[32m            try:[m
+[32m+[m[32m                save_report(forced, tmp_path)[m
+[32m+[m[32m            except FileExistsError:[m
+[32m+[m[32m                refusals.append("refused")[m
+[32m+[m
+[32m+[m[32m        threads = [threading.Thread(target=saver) for _ in range(6)][m
+[32m+[m[32m        for thread in threads:[m
+[32m+[m[32m            thread.start()[m
+[32m+[m[32m        for thread in threads:[m
+[32m+[m[32m            thread.join()[m
+[32m+[m[32m        assert len(refusals) == 6  # every conflicting save refused[m
+[32m+[m[32m        assert path.read_bytes() == original  # original untouched[m
+[32m+[m
+[32m+[m[32m    def test_first_save_race_yields_exactly_one_winner(self, tmp_path):[m
+[32m+[m[32m        rec_a, rec_b = self._two_records()[m
+[32m+[m[32m        forced_b = dict(rec_b, experiment_id=rec_a["experiment_id"])[m
+[32m+[m[32m        barrier = threading.Barrier(2)[m
+[32m+[m[32m        outcomes = {}[m
+[32m+[m
+[32m+[m[32m        def saver(name, record):[m
+[32m+[m[32m            barrier.wait()[m
+[32m+[m[32m            try:[m
+[32m+[m[32m                save_report(record, tmp_path)[m
+[32m+[m[32m                outcomes[name] = "ok"[m
+[32m+[m[32m            except FileExistsError:[m
+[32m+[m[32m                outcomes[name] = "refused"[m
+[32m+[m
+[32m+[m[32m        threads = [threading.Thread(target=saver, args=("a", rec_a)),[m
+[32m+[m[32m                   threading.Thread(target=saver, args=("b", forced_b))][m
+[32m+[m[32m        for thread in threads:[m
+[32m+[m[32m            thread.start()[m
+[32m+[m[32m        for thread in threads:[m
+[32m+[m[32m            thread.join()[m
+[32m+[m[32m        # exactly one winner; the loser's content never landed[m
+[32m+[m[32m        assert sorted(outcomes.values()) == ["ok", "refused"][m
+[32m+[m[32m        final = (tmp_path / f"{rec_a['experiment_id']}.json").read_bytes()[m
+[32m+[m[32m        candidates = [[m
+[32m+[m[32m            (json.dumps(rec_a, indent=2, sort_keys=True) + "\n").encode("utf-8"),[m
+[32m+[m[32m            (json.dumps(forced_b, indent=2, sort_keys=True) + "\n").encode("utf-8"),[m
+[32m+[m[32m        ][m
+[32m+[m[32m        assert final in candidates  # one complete record, never interleaved[m
+[32m+[m[32m        winner = rec_a if final == candidates[0] else forced_b[m
+[32m+[m[32m        assert outcomes["a" if winner is rec_a else "b"] == "ok"[m
+[32m+[m
+ [m
+ # --- Integration with the real engine (Phase 7 task 6) -----------------------[m
+ [m
+[1mdiff --git a/tests/test_integration.py b/tests/test_integration.py[m
+[1mindex e3d7d32..7ae345e 100644[m
+[1m--- a/tests/test_integration.py[m
+[1m+++ b/tests/test_integration.py[m
+[36m@@ -92,6 +92,102 @@[m [mclass TestRetryTaxonomy:[m
+         assert excinfo.value.code == "E_INTERNAL"[m
+         assert len(calls) == 3[m
+ [m
+[32m+[m[32m    def test_empty_stdout_with_documented_exit_code_is_transient(self,[m
+[32m+[m[32m                                                                 monkeypatch):[m
+[32m+[m[32m        # Regression (2026-10-27 audit-2): the pre-fix engine could die with[m
+[32m+[m[32m        # std::bad_alloc — empty stdout on the DOCUMENTED exit code 3. The[m
+[32m+[m[32m        # client must treat that as transient, not accept it as a result.[m
+[32m+[m[32m        calls = [][m
+[32m+[m
+[32m+[m[32m        def crashing_spawn(exe, mode, payload_text, timeout_s):[m
+[32m+[m[32m            calls.append(mode)[m
+[32m+[m[32m            return 3, "", ""  # documented code, no envelope[m
+[32m+[m
+[32m+[m[32m        monkeypatch.setattr(engine_client, "_spawn_attempt", crashing_spawn)[m
+[32m+[m[32m        with pytest.raises(engine_client.EngineError) as excinfo:[m
+[32m+[m[32m            engine_client.run_mode("simulate", {"config": {}, "trace": {}})[m
+[32m+[m[32m        assert excinfo.value.code == "E_INTERNAL"[m
+[32m+[m[32m        assert len(calls) == 3[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass TestOkEnvelopeShape:[m
+[32m+[m[32m    """Transport-level ok-envelope shape validation (audit-2): a stale or[m
+[32m+[m[32m    mismatched engine binary emitting a 'successful' envelope without its[m
+[32m+[m[32m    contract fields must fail as E_INTERNAL at this boundary — never flow[m
+[32m+[m[32m    through as a false success that crashes consumers with a KeyError."""[m
+[32m+[m
+[32m+[m[32m    @staticmethod[m
+[32m+[m[32m    def _ok_envelope(mode):[m
+[32m+[m[32m        envelope = {"ok": True,[m
+[32m+[m[32m                    "engine": {"name": "cache_sim", "version": "0.1.0"}}[m
+[32m+[m[32m        if mode == "geometry":[m
+[32m+[m[32m            envelope["geometry"] = ts.GEOMETRY_DEMO[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            envelope.update({[m
+[32m+[m[32m                "geometry": ts.GEOMETRY_DEMO,[m
+[32m+[m[32m                "events": [],[m
+[32m+[m[32m                "summary": {"accesses": 0, "hits": 0, "misses": 0,[m
+[32m+[m[32m                            "evictions": 0, "hit_rate": None,[m
+[32m+[m[32m                            "miss_rate": None, "trace_sha256": "0" * 64},[m
+[32m+[m[32m                "state": {"sets": [], "snapshots": None},[m
+[32m+[m[32m            })[m
+[32m+[m[32m        return envelope[m
+[32m+[m
+[32m+[m[32m    def test_complete_envelopes_are_accepted(self, monkeypatch):[m
+[32m+[m[32m        for mode in ("version", "geometry", "simulate"):[m
+[32m+[m[32m            def spawn(exe, m, payload_text, timeout_s, _mode=mode):[m
+[32m+[m[32m                return 0, json.dumps(self._ok_envelope(_mode)), ""[m
+[32m+[m[32m            monkeypatch.setattr(engine_client, "_spawn_attempt", spawn)[m
+[32m+[m[32m            payload = ({} if mode == "version"[m
+[32m+[m[32m                       else ts.CONFIG_SET_ASSOCIATIVE if mode == "geometry"[m
+[32m+[m[32m                       else {"config": ts.CONFIG_SET_ASSOCIATIVE,[m
+[32m+[m[32m                             "trace": {"name": "t", "addresses": []}})[m
+[32m+[m[32m            assert engine_client.run_mode(mode, payload)["ok"] is True[m
+[32m+[m
+[32m+[m[32m    def test_missing_summary_is_terminal_internal(self, monkeypatch):[m
+[32m+[m[32m        calls = [][m
+[32m+[m[32m        envelope = self._ok_envelope("simulate")[m
+[32m+[m[32m        del envelope["summary"][m
+[32m+[m
+[32m+[m[32m        def spawn(exe, mode, payload_text, timeout_s):[m
+[32m+[m[32m            calls.append(mode)[m
+[32m+[m[32m            return 0, json.dumps(envelope), ""[m
+[32m+[m
+[32m+[m[32m        monkeypatch.setattr(engine_client, "_spawn_attempt", spawn)[m
+[32m+[m[32m        with pytest.raises(engine_client.EngineError) as excinfo:[m
+[32m+[m[32m            engine_client.run_simulate({"config": ts.CONFIG_SET_ASSOCIATIVE,[m
+[32m+[m[32m                                        "trace": {"name": "t",[m
+[32m+[m[32m                                                  "addresses": []}})[m
+[32m+[m[32m        assert excinfo.value.code == "E_INTERNAL"[m
+[32m+[m[32m        assert "contract fields" in excinfo.value.message[m
+[32m+[m[32m        assert len(calls) == 1  # terminal — retrying a stale exe is futile[m
+[32m+[m
+[32m+[m[32m    def test_missing_engine_version_is_terminal_internal(self, monkeypatch):[m
+[32m+[m[32m        envelope = self._ok_envelope("geometry")[m
+[32m+[m[32m        envelope["engine"] = {"name": "cache_sim"}[m
+[32m+[m
+[32m+[m[32m        def spawn(exe, mode, payload_text, timeout_s):[m
+[32m+[m[32m            return 0, json.dumps(envelope), ""[m
+[32m+[m
+[32m+[m[32m        monkeypatch.setattr(engine_client, "_spawn_attempt", spawn)[m
+[32m+[m[32m        with pytest.raises(engine_client.EngineError) as excinfo:[m
+[32m+[m[32m            engine_client.fetch_geometry(ts.CONFIG_SET_ASSOCIATIVE)[m
+[32m+[m[32m        assert excinfo.value.code == "E_INTERNAL"[m
+[32m+[m
+[32m+[m[32m    def test_wrongly_typed_events_is_terminal_internal(self, monkeypatch):[m
+[32m+[m[32m        envelope = self._ok_envelope("simulate")[m
+[32m+[m[32m        envelope["events"] = {"not": "a list"}[m
+[32m+[m
+[32m+[m[32m        def spawn(exe, mode, payload_text, timeout_s):[m
+[32m+[m[32m            return 0, json.dumps(envelope), ""[m
+[32m+[m
+[32m+[m[32m        monkeypatch.setattr(engine_client, "_spawn_attempt", spawn)[m
+[32m+[m[32m        with pytest.raises(engine_client.EngineError) as excinfo:[m
+[32m+[m[32m            engine_client.run_simulate({"config": ts.CONFIG_SET_ASSOCIATIVE,[m
+[32m+[m[32m                                        "trace": {"name": "t",[m
+[32m+[m[32m                                                  "addresses": []}})[m
+[32m+[m[32m        assert excinfo.value.code == "E_INTERNAL"[m
+[32m+[m
+ [m
+ # --- Missing engine (AC-P8.3) --------------------------------------------------[m
+ [m
+[36m@@ -116,6 +212,15 @@[m [mclass TestMissingEngine:[m
+         assert response["error"]["code"] == "E_INTERNAL"[m
+         assert "mingw32-make" in response["error"]["message"][m
+ [m
+[32m+[m[32m    def test_spawn_is_working_directory_independent(self, tmp_path,[m
+[32m+[m[32m                                                    monkeypatch):[m
+[32m+[m[32m        # Audit-2 (§8): the engine reads only stdin/stdout and the client[m
+[32m+[m[32m        # spawns it by absolute path — the caller's cwd must not matter.[m
+[32m+[m[32m        monkeypatch.chdir(tmp_path)[m
+[32m+[m[32m        envelope = engine_client.run_mode("version", {})[m
+[32m+[m[32m        assert envelope["ok"] is True[m
+[32m+[m[32m        assert envelope["engine"]["version"] == "0.1.0"[m
+[32m+[m
+ [m
+ # --- Sample traces --------------------------------------------------------------[m
+ [m
+[1mdiff --git a/tests/test_smoke.py b/tests/test_smoke.py[m
+[1mindex c4eb8ed..daa6dfb 100644[m
+[1m--- a/tests/test_smoke.py[m
+[1m+++ b/tests/test_smoke.py[m
+[36m@@ -217,6 +217,31 @@[m [mclass TestSimulateMode:[m
+         assert proc.returncode == 3[m
+         assert json.loads(proc.stdout)["error"]["code"] == "E_JOB_INVALID"[m
+ [m
+[32m+[m[32m    def test_extreme_state_demand_never_crashes(self, tmp_path):[m
+[32m+[m[32m        # Regression (2026-10-27 audit-2): a VALID supported configuration[m
+[32m+[m[32m        # (2^20-line cache, 100,000-access trace) exhausted memory and died[m
+[32m+[m[32m        # with an uncaught std::bad_alloc — empty stdout and the abort exit[m
+[32m+[m[32m        # code, colliding with the documented validation code 3. The engine[m
+[32m+[m[32m        # must always return a contract envelope: ok success, or a[m
+[32m+[m[32m        # structured E_INTERNAL with the documented exit code 4.[m
+[32m+[m[32m        job = {"config": {"capacity_bytes": 1048576, "block_size_bytes": 1,[m
+[32m+[m[32m                          "organization": "direct", "address_width_bits": 21},[m
+[32m+[m[32m               "trace": {"name": "huge-state",[m
+[32m+[m[32m                         "addresses": [(7 * i) & 0x1FFFFF[m
+[32m+[m[32m                                       for i in range(100000)]}}[m
+[32m+[m[32m        f = tmp_path / "huge-job.json"[m
+[32m+[m[32m        f.write_text(json.dumps(job), encoding="utf-8")[m
+[32m+[m[32m        proc = subprocess.run([m
+[32m+[m[32m            [str(ENGINE), "--mode", "simulate", "--in", str(f)],[m
+[32m+[m[32m            capture_output=True, text=True, timeout=120)[m
+[32m+[m[32m        envelope = json.loads(proc.stdout)  # stdout must be a contract envelope[m
+[32m+[m[32m        if envelope["ok"] is True:[m
+[32m+[m[32m            assert proc.returncode == 0[m
+[32m+[m[32m            assert envelope["summary"]["accesses"] == 100000[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            assert proc.returncode == 4[m
+[32m+[m[32m            assert envelope["error"]["code"] == "E_INTERNAL"[m
+[32m+[m
+     def test_missing_trace_rejected(self, tmp_path):[m
+         job = {"config": CONFIG_DIRECT}[m
+         proc = self._run_job(job, tmp_path)[m
+[1mdiff --git a/tests/test_trace_bot.py b/tests/test_trace_bot.py[m
+[1mindex 2fe903e..20c2498 100644[m
+[1m--- a/tests/test_trace_bot.py[m
+[1m+++ b/tests/test_trace_bot.py[m
+[36m@@ -242,6 +242,31 @@[m [mclass TestWidthAndLimitRejections:[m
+         assert response["error"]["code"] == "E_TRACE_INVALID"[m
+         assert "256" in response["error"]["message"][m
+ [m
+[32m+[m[32m    def test_conflict_base_congruence_exact_sequence(self):[m
+[32m+[m[32m        # Audit-2 (§6): independently calculated exact sequence. Sets 2:[m
+[32m+[m[32m        # base = start_block + ((target_set - start_block) mod sets)[m
+[32m+[m[32m        # = 7 + ((0 - 7) mod 2) = 8 (first block >= 7 mapping to set 0);[m
+[32m+[m[32m        # blocks 8, 10; block_size 2.[m
+[32m+[m[32m        response = run({[m
+[32m+[m[32m            "pattern": "conflict",[m
+[32m+[m[32m            "config": ts.CONFIG_SET_ASSOCIATIVE,[m
+[32m+[m[32m            "params": {"distinct_blocks": 2, "passes": 2, "target_set": 0,[m
+[32m+[m[32m                       "start_block": 7},[m
+[32m+[m[32m        })[m
+[32m+[m[32m        assert response["ok"] is True[m
+[32m+[m[32m        assert response["trace"]["addresses"] == [16, 20, 16, 20][m
+[32m+[m[32m        assert response["warnings"] == [][m
+[32m+[m
+[32m+[m[32m    def test_sequential_exact_sequence(self):[m
+[32m+[m[32m        response = run({[m
+[32m+[m[32m            "pattern": "sequential",[m
+[32m+[m[32m            "config": ts.CONFIG_SET_ASSOCIATIVE,[m
+[32m+[m[32m            "params": {"start_address": 100, "count": 4, "stride_bytes": 7},[m
+[32m+[m[32m        })[m
+[32m+[m[32m        assert response["ok"] is True[m
+[32m+[m[32m        assert response["trace"]["addresses"] == [100, 107, 114, 121][m
+[32m+[m[32m        assert response["trace"]["name"] == "sequential-100-4-7"[m
+[32m+[m
+     def test_sequential_count_over_limit(self):[m
+         response = run({[m
+             "pattern": "sequential",[m
+[1mdiff --git a/ui/app.py b/ui/app.py[m
+[1mindex 54df701..d6430d7 100644[m
+[1m--- a/ui/app.py[m
+[1m+++ b/ui/app.py[m
+[36m@@ -394,7 +394,16 @@[m [mwith tab_experiments:[m
+             st.caption(f"Report saved to {saved}")[m
+         columns = st.columns(2)[m
+         if columns[0].button("Save report", key="save_report"):[m
+[31m-            state.report_path = save_report(record, _REPORTS_DIR)[m
+[32m+[m[32m            # A save failure (including a conflicting-destination refusal,[m
+[32m+[m[32m            # D-30) must surface as an error card, never a traceback — and[m
+[32m+[m[32m            # must not discard the displayed record.[m
+[32m+[m[32m            try:[m
+[32m+[m[32m                state.report_path = save_report(record, _REPORTS_DIR)[m
+[32m+[m[32m            except OSError as err:[m
+[32m+[m[32m                state.experiment_error = {[m
+[32m+[m[32m                    "code": "E_INTERNAL",[m
+[32m+[m[32m                    "message": f"the report could not be saved: {err}",[m
+[32m+[m[32m                    "details": []}[m
+             st.rerun()[m
+         record_json = json.dumps(record, indent=2, sort_keys=True)[m
+         columns[1].download_button("Download record (JSON)",[m
+[1mdiff --git a/ui/cache_scene.py b/ui/cache_scene.py[m
+[1mindex 062e3da..e98fd18 100644[m
+[1m--- a/ui/cache_scene.py[m
+[1m+++ b/ui/cache_scene.py[m
+[36m@@ -86,6 +86,14 @@[m [mdef build_payload(envelope):[m
+                 "per-access snapshots were not captured for this run. Run the "[m
+                 "simulation again from the Simulator tab — the 3D view captures "[m
+                 "them automatically for supported traces."}[m
+[32m+[m[32m    if len(snapshots) != len(events):[m
+[32m+[m[32m        # The engine emits one snapshot per access (architecture.md 6.7); a[m
+[32m+[m[32m        # disagreement means a malformed envelope, and replaying it would[m
+[32m+[m[32m        # desynchronize the scene from the real accesses.[m
+[32m+[m[32m        return {"ok": False, "reason":[m
+[32m+[m[32m                f"the run's {len(snapshots)} snapshots do not match its "[m
+[32m+[m[32m                f"{len(events)} events; the 3D view refuses inconsistent "[m
+[32m+[m[32m                "engine data."}[m
+ [m
+     events_out = [][m
+     for event in events:[m

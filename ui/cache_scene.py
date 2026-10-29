@@ -86,6 +86,14 @@ def build_payload(envelope):
                 "per-access snapshots were not captured for this run. Run the "
                 "simulation again from the Simulator tab — the 3D view captures "
                 "them automatically for supported traces."}
+    if len(snapshots) != len(events):
+        # The engine emits one snapshot per access (architecture.md 6.7); a
+        # disagreement means a malformed envelope, and replaying it would
+        # desynchronize the scene from the real accesses.
+        return {"ok": False, "reason":
+                f"the run's {len(snapshots)} snapshots do not match its "
+                f"{len(events)} events; the 3D view refuses inconsistent "
+                "engine data."}
 
     events_out = []
     for event in events:
